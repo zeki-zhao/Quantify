@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quantify · 个人量化研究</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+<header><span class="logo">Q</span><div><h1>个人量化研究</h1><p>基本面 · 估值假设 · 因子验证 · 价格风险</p></div><span class="tag">本地运行 / 无账户 / 无交易</span></header>
+<main>
+<aside class="notice"><strong>演示数据 · 未经校准</strong> 五只股票的数值全部人工合成，并非真实行情或财报。模型概率不是实际投资胜率；基本面与估值情景不转换为概率。</aside>
+<section><div class="section-head"><h2>01 / 基本面快照</h2><label>示例股票 <select id="stock" aria-label="示例股票"></select></label></div>
+<p id="stock-meta" class="muted"></p><div id="fundamentals" class="table-wrap"></div><p id="fund-note" class="muted"></p></section>
+
+<section><h2>02 / 因子研究：样本外是否改善？</h2><p>比较动量、盈利质量、低估值、低波动及等权组合。训练窗选规则，下一测试窗验证；与同一股票池、同一入场时间的未筛选基准比较。</p>
+<form id="research-form">
+<div class="grid"><label>数据<select id="research-data"><option value="demo">合成月度面板（仅验证流程）</option><option value="csv">导入自己的月度 CSV</option></select></label><label>持有期（月）<select id="research-horizon"><option>3</option><option>6</option><option>12</option></select></label><label>每期筛选数量<input id="top-k" type="number" value="2" min="1" max="20" step="1" required></label><label>往返费用（bp）<input id="cost-bps" type="number" value="20" min="0" max="1000" step="1" required></label></div>
+<div id="csv-fields" hidden><label>月度 CSV（UTF-8）<input id="csv-file" type="file" accept=".csv,text/csv"></label><label>来源与含分红/复权口径<input id="csv-source" type="text" maxlength="500" placeholder="例如：个人整理；含分红再投资指数；因子已按真实公告日期滞后"></label></div>
+<details><summary>输入格式与检验方法</summary><p>列顺序：date,symbol,total_return_index,quality,value,available_at。每月一个截面、股票池固定、至少60个月（12个月持有期建议72个月以上）；quality/value 越大越好，available_at 必须不晚于观察日。以含分红再投资指数计算收益；不能直接使用未复权价格。<a href="/api/research-template.csv" download="synthetic-factor-template.csv">下载合成 CSV 模板</a>。</p><p>36个月滚动训练、12个月测试块，剔除尚未成熟的训练标签；信号在下一月观察点入场，测试持有窗口不重叠。上涨比例是股票×入场月的历史频率，股票之间仍相关。平衡面板可能有幸存者偏差；真实数据质量须自行核验。该实验不是组合净值回测，也不保证胜率提升。</p></details>
+<button id="research-run" type="submit">运行因子实验</button><span id="research-status" role="status" aria-live="polite"></span></form>
+<div id="research-result" hidden><p id="research-warning" class="notice"></p><div id="research-summary" class="table-wrap"></div><details><summary>逐窗结果与选择的因子</summary><div id="research-folds" class="table-wrap"></div><p id="research-method" class="muted"></p></details><div class="actions"><button id="research-json" class="secondary">导出研究 JSON</button><button id="research-csv" class="secondary">导出研究 CSV</button></div></div></section>
+
+<form id="analysis-form">
+<section><h2>03 / 可编辑的估值情景</h2><p>假设未来12个月的利润或内含价值，再给出估值倍数。结果仅表示这些条件成立时的价格，不赋予情景概率。</p>
+<div class="grid"><label>起点价格（元/股）<input id="price" type="number" min="0.01" max="1000000" step="any" required></label><label>总股本（亿股）<input id="shares" type="number" min="0.0001" max="1000000" step="any" required></label><label>估值方法<select id="basis"><option value="pe">归母净利润 × PE</option><option value="pev">内含价值 × P/EV（保险）</option></select></label></div>
+<div class="table-wrap"><table><thead><tr><th>情景</th><th id="amount-label">归母净利润（亿元）</th><th>估值倍数</th><th>假设说明（可修改）</th></tr></thead><tbody id="scenarios"></tbody></table></div><p class="muted">价格 = 利润或 EV（亿元）× 倍数 ÷ 总股本（亿股）。利润/EV 非正时该方法不适用。股本假设固定；结果不含分红。</p></section>
+
+<section><h2>04 / 蒙特卡洛价格风险</h2><p>GBM 几何布朗运动，252个交易日/年，3/6/12个月对应63/126/252步。以下参数是独立假设，不来自基本面打分或因子实验。</p>
+<div class="grid"><label>年化价格漂移 μ（%）<input id="mu" type="number" min="-100" max="100" step="any" required></label><label>年化波动率 σ（%）<input id="sigma" type="number" min="0" max="200" step="any" required></label><label>连续股息率 q（%）<input id="dividend" type="number" min="0" max="30" step="any" required></label><label>模拟路径数<input id="paths" type="number" min="100" max="10000" step="1" required></label><label>随机种子<input id="seed" type="number" min="0" max="4294967295" step="1" required></label></div>
+<details><summary>模型公式、分红与风险口径</summary><p>S(t+dt) = S(t) × exp[(μ − σ²/2)dt + σ√dt Z]，Z 为独立标准正态变量。μ 为价格漂移；总回报 = S(t)/S(0) × exp(qt) − 1，假设分红连续到账并立即再投资，未计税费及离散除息。</p><p>触及 −10%/−20%/−30%/−40% 指期间每日收盘相对初始投入的亏损，不是从最高点计算的最大回撤。日内触及未统计，可能低估连续触及概率。模型不含跳跃、厚尾、波动聚集、涨跌停、停牌和流动性风险。</p></details>
+<button type="submit" id="run">计算估值与风险</button><span id="status" role="status" aria-live="polite"></span></section></form>
+
+<section id="results" hidden><div class="section-head"><h2>分析结果 <span class="tag">未经校准</span></h2><div class="actions"><button id="export-json" class="secondary">导出 JSON</button><button id="export-csv" class="secondary">导出 CSV</button></div></div><p id="result-meta" class="muted"></p>
+<h3>估值情景（仅价格收益）</h3><div id="valuation-result" class="table-wrap"></div>
+<div class="section-head"><h3>期末收益分布</h3><div class="actions"><label>期限<select id="chart-month"><option value="3">3个月</option><option value="6">6个月</option><option value="12" selected>12个月</option></select></label><label>收益口径<select id="return-kind"><option value="price">价格收益</option><option value="total">含分红总回报</option></select></label></div></div>
+<div id="chart"></div><p class="muted">横轴：期末收益；纵轴：模拟路径占比。直方图覆盖全部样本范围，不裁掉尾部；切换口径会更新下方风险表。</p>
+<div id="risk-table" class="table-wrap"></div><p id="sampling" class="muted"></p><p class="notice">表中触及概率是相对初始投入的每日收盘触及频率，并非期末亏损概率或最大回撤。合成数据与主观参数无法证明实际投资胜率。</p><details><summary>完整模型及输入来源</summary><pre id="model-meta"></pre></details></section>
+<footer>本地个人研究 demo · 不自动交易 · 无外部行情请求 · 历史估值分位暂不计算（无历史统计窗口）</footer>
+</main></body></html>

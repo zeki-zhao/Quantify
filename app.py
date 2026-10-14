@@ -1,0 +1,94 @@
+"""Start with: python app.py --port 8000 (Python 3.10+, no dependencies)."""
+import argparse
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from quantify.data import DemoDataProvider
+from quantify.research import demo_csv, evaluate
+from quantify.service import analyze, export_csv
+
+ROOT = Path(__file__).resolve().parent
+WORK = threading.BoundedSemaphore(1)
+STATIC = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
+          "/style.css": ("style.css", "text/css")}
+
+
+class Handler(BaseHTTPRequestHandler):
+    def send_data(self, status, content, mime="application/json"):
+        raw = content.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", mime + "; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def send_json(self, status, value):
+        self.send_data(status, json.dumps(value, ensure_ascii=False, allow_nan=False))
+
+    def do_GET(self):
+        if self.path == "/api/stocks":
+            self.send_json(200, DemoDataProvider().list_stocks())
+        elif self.path == "/api/research-template.csv":
+            self.send_data(200, demo_csv(), "text/csv")
+        elif self.path in STATIC:
+            filename, mime = STATIC[self.path]
+            self.send_data(200, (ROOT / "static" / filename).read_text(encoding="utf-8"), mime)
+        else:
+            self.send_json(404, {"error": "路径不存在"})
+
+    def do_POST(self):
+        if self.path not in ("/api/analyze", "/api/research"):
+            self.send_json(404, {"error": "路径不存在"})
+            return
+        if self.headers.get_content_type() != "application/json":
+            self.send_json(415, {"error": "仅接受 application/json"})
+            return
+        if not WORK.acquire(blocking=False):
+            self.send_json(429, {"error": "当前有计算正在运行，请稍后重试"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 2_000_000:
+                raise ValueError("请求大小必须为 1 字节至 2 MB")
+            self.connection.settimeout(10)
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("请求必须为 JSON 对象")
+            if self.path == "/api/analyze":
+                report = analyze(payload)
+            else:
+                if set(payload) - {"csv_text", "horizon", "top_k", "cost_bps", "source"}:
+                    raise ValueError("研究参数字段无效")
+                if payload.get("csv_text") is not None and (not isinstance(payload.get("source"), str) or not payload["source"].strip()):
+                    raise ValueError("导入数据必须声明来源与价格复权/分红口径")
+                report = evaluate(**payload)
+            self.send_json(200, {"report": report, "csv": export_csv(report)})
+        except (ValueError, TypeError, UnicodeError) as exc:
+            self.send_json(400, {"error": str(exc)})
+        except TimeoutError:
+            self.send_json(408, {"error": "读取请求超时"})
+        finally:
+            WORK.release()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="本地个人量化研究 demo")
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    print(f"Quantify demo: http://127.0.0.1:{server.server_port}  (Ctrl+C 停止)", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()
