@@ -5,12 +5,13 @@ import io
 import math
 import random
 from datetime import date
-from statistics import mean, pstdev
+from statistics import mean
 
 from .core import integer, number
+from .factors import BUILTINS, calculate, history_length, required_fields as factor_fields, validate_spec
 
 FIELDS = ["date", "symbol", "total_return_index", "quality", "value", "available_at"]
-CANDIDATES = ("momentum", "quality", "value", "low_volatility", "combined")
+CANDIDATES = tuple(spec["id"] for spec in BUILTINS)
 
 
 def demo_csv():
@@ -30,10 +31,10 @@ def demo_csv():
     return buf.getvalue()
 
 
-def parse_panel(text):
+def _parse_panel(text, required_fields=("quality", "value")):
     if not isinstance(text, str) or len(text.encode("utf-8")) > 1_500_000:
         raise ValueError("CSV 必须为 UTF-8 文本，且不超过 1.5 MB")
-    reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
+    reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")), strict=True)
     if reader.fieldnames != FIELDS:
         raise ValueError("CSV 表头及顺序必须为：" + ",".join(FIELDS))
     grouped = {}
@@ -44,14 +45,21 @@ def parse_panel(text):
             stamp = date.fromisoformat(row["date"])
             available = date.fromisoformat(row["available_at"])
             symbol = row["symbol"].strip()
-            values = {key: float(row[key]) for key in ("total_return_index", "quality", "value")}
+            values = {key: (None if row[key] == "" and key != "total_return_index" else float(row[key]))
+                      for key in ("total_return_index", "quality", "value")}
         except (ValueError, TypeError, AttributeError):
             raise ValueError("CSV 日期或数值无效") from None
         if not symbol or len(symbol) > 40 or available > stamp:
             raise ValueError("代码无效或因子可用日期晚于观察日期（未来数据）")
+        if None in row or any(value is None for value in row.values()):
+            raise ValueError("CSV 列数不一致")
         number(values["total_return_index"], "含分红指数", .000001, 1e12)
         for key in ("quality", "value"):
-            number(values[key], key, -1e9, 1e9)
+            if values[key] is None:
+                if key in required_fields:
+                    raise ValueError(f"{key} 因子缺少财务输入")
+            else:
+                number(values[key], key, -1e9, 1e9)
         bucket = grouped.setdefault(stamp, {})
         if symbol in bucket:
             raise ValueError("CSV 包含重复日期/代码")
@@ -70,24 +78,15 @@ def parse_panel(text):
     return dates, [grouped[d] for d in dates]
 
 
+def parse_panel(text, required_fields=("quality", "value")):
+    try:
+        return _parse_panel(text, required_fields)
+    except csv.Error:
+        raise ValueError("CSV 格式无效或单个字段过长") from None
+
+
 def signals(panel, index):
-    scores = {}
-    for symbol, row in panel[index].items():
-        prices = [panel[i][symbol]["total_return_index"] for i in range(index - 6, index + 1)]
-        log_returns = [math.log(b / a) for a, b in zip(prices, prices[1:])]
-        scores[symbol] = {"momentum": prices[-1] / prices[0] - 1,
-                          "quality": row["quality"], "value": row["value"],
-                          "low_volatility": -pstdev(log_returns)}
-    ranks = {symbol: [] for symbol in scores}
-    for factor in CANDIDATES[:-1]:
-        for symbol in scores:
-            value = scores[symbol][factor]
-            lower = sum(scores[other][factor] < value for other in scores)
-            equal = sum(scores[other][factor] == value for other in scores)
-            ranks[symbol].append((lower + (equal - 1) / 2) / (len(scores) - 1))
-    for symbol in scores:
-        scores[symbol]["combined"] = mean(ranks[symbol])
-    return scores
+    return calculate(panel, index, BUILTINS)
 
 
 def statistics(returns):
@@ -97,7 +96,7 @@ def statistics(returns):
             "worst_return": min(returns), "note": "样本为股票×入场月；横截面相关，不是独立试验，不提供伪精确置信区间"}
 
 
-def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合成研究面板 v1"):
+def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合成研究面板 v1", factor_specs=None, warmup_months=None):
     horizon = integer(horizon, "研究持有月数", 3, 12)
     if horizon not in (3, 6, 12):
         raise ValueError("持有月数必须为 3、6 或 12")
@@ -107,10 +106,20 @@ def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合�
     if not isinstance(source, str) or not source.strip() or len(source) > 500:
         raise ValueError("请填写数据来源和复权/分红口径（最多 500 字）")
     input_csv = demo_csv() if is_demo else csv_text
-    dates, panel = parse_panel(input_csv)
+    specs = list(BUILTINS if factor_specs is None else factor_specs)
+    if not 1 <= len(specs) <= 10:
+        raise ValueError("每次研究需要 1 至 10 个因子版本")
+    for spec in specs:
+        validate_spec(spec)
+    candidates = tuple(spec["id"] for spec in specs)
+    if len(set(candidates)) != len(candidates):
+        raise ValueError("因子版本不能重复")
+    lookback = max(6, history_length(specs))
+    warmup = lookback if warmup_months is None else integer(warmup_months, "共同预热月数", lookback, 60)
+    dates, panel = parse_panel(input_csv, required_fields=factor_fields(specs))
     if top_k >= len(panel[0]):
         raise ValueError("筛选数量必须小于股票池数量")
-    factor_scores = {i: signals(panel, i) for i in range(6, len(panel))}
+    factor_scores = {i: calculate(panel, i, specs) for i in range(lookback, len(panel))}
     cost = cost_bps / 10000
 
     def event(index, factor=None):
@@ -124,12 +133,12 @@ def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合�
 
     folds, selected_returns, baseline_returns = [], [], []
     # 36-month rolling fit, 12-month forward test; training labels mature BEFORE test signal.
-    for start in range(42 + horizon, len(panel) - horizon - 1, 12):
+    for start in range(warmup + 36 + horizon, len(panel) - horizon - 1, 12):
         train = list(range(start - horizon - 36, start - horizon - 1))
-        train = [i for i in train if i >= 6 and i + 1 + horizon < start]
+        train = [i for i in train if i >= lookback and i + 1 + horizon < start]
         fitness = {factor: statistics([r for i in train for r in event(i, factor)])["positive_rate"]
-                   for factor in CANDIDATES}
-        chosen = max(CANDIDATES, key=lambda factor: fitness[factor])
+                   for factor in candidates}
+        chosen = max(candidates, key=lambda factor: fitness[factor])
         # Non-overlapping holding windows within/across 12-month test blocks.
         test = list(range(start, min(start + 12, len(panel) - horizon - 1), horizon))
         chosen_results = [r for i in test for r in event(i, chosen)]
@@ -150,7 +159,7 @@ def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合�
     return {"is_demo": is_demo, "source": "人工合成研究面板 v1（与公司财报演示数据独立）" if is_demo else source,
             "status": "流程验证，不能证明真实胜率提升" if is_demo else "探索性滚动样本外统计；未经独立验证或概率校准",
             "parameters": {"horizon_months": horizon, "top_k": top_k, "round_trip_cost_bps": cost_bps,
-                           "training_window_months": 36, "test_block_months": 12},
+                           "training_window_months": 36, "test_block_months": 12, "warmup_months": warmup},
             "data_window": [dates[0].isoformat(), dates[-1].isoformat()],
             "dataset": {"sha256": hashlib.sha256(input_csv.encode("utf-8")).hexdigest(),
                         "raw_csv": input_csv, "frequency": "monthly",
@@ -160,7 +169,8 @@ def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合�
             "factor_definitions": {"momentum": "过去6个月含分红指数涨幅", "quality": "用户提供的时点可用盈利质量因子，越大越好",
                                    "value": "用户提供的时点可用估值因子（如盈利收益率），越大越好",
                                    "low_volatility": "过去6个月对数月收益标准差的相反数", "combined": "四因子截面百分位等权平均；不是概率"},
+            "factor_versions": specs,
             "method": "滚动训练窗内选择上涨比例最高的候选因子，剔除标签尚未成熟的训练样本；固定因子进入下一测试块。月末信号、下一观察点入场；测试持有区间不重叠。基准为相同入场时间的全股票池。收益为含分红指数收益减一次往返费用。",
-            "limitations": "训练期持有区间有重叠；测试股票间相关；仅5个候选规则，仍有选择偏差。平衡股票池可能引入幸存者偏差；CSV可用日期由用户声明，未验证公告；未模拟真实成交、停牌、涨跌停、组合资金与税费。不是组合净值回测，不承诺提升。需独立留出集及更长多市场数据。",
+            "limitations": "训练期持有区间有重叠；测试股票间相关；候选规则选择仍有选择偏差。平衡股票池可能引入幸存者偏差；CSV可用日期由用户声明，未验证公告；未模拟真实成交、停牌、涨跌停、组合资金与税费。不是组合净值回测，不承诺提升。需独立留出集及更长多市场数据。",
             "selected": selected, "baseline": baseline,
             "positive_rate_difference": selected["positive_rate"] - baseline["positive_rate"], "folds": folds}

@@ -1,7 +1,9 @@
 # Quantify：个人股票量化研究 demo
 
-Python 3.10+，**零第三方依赖**。单页本地工具，无账户、无数据库、无自动交易。
+Python 3.10+，**零第三方依赖**。个人本地工具，无账户、无自动交易；研究工作台使用 Python 内置 SQLite 保存数据和实验。
 重点是检验因子在样本外是否改善结果，同时保留基本面、估值和风险分析。没有“保证胜率提升”的功能。
+
+后续建设以 [构建计划](docs/BUILD_PLAN.md) 为准，覆盖真实数据接入、因子版本管理和 ChatGPT 辅助迭代；每次开发记录在 [迭代目录](docs/iterations/README.md)。CSV 数据中心、因子版本和实验记录已实现；在线真实数据和 ChatGPT 接入仍待后续阶段。文档维护约定见 [docs 入口](docs/README.md)。
 
 ## 启动
 
@@ -16,6 +18,22 @@ python app.py
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+## 研究工作台（第一阶段 CSV 路线）
+
+启动后从首页点击“进入研究工作台”。原有个股、估值和合成研究页面继续保留。
+
+1. 数据中心支持日线、月度面板、财务因子与历史股票池 CSV，下载表头模板后填写自己的数据；没有数据时可点击“创建合成研究快照”体验流程。
+2. 导入时声明来源、复权/分红口径与数据性质。选择父快照可以增量更新；重复数据不重复入库，修订保留旧版本。
+3. 因子库提供五类基线，可以派生新的窗口/跳过月份版本，并记录修改理由。
+4. 实验选择月度快照及具体因子版本，统一训练/测试时段，封存末尾至少 12 个月，保存成功与失败记录；支持对比、复现和完整 JSON 下载。
+5. 有完整含分红指数时，可从日线生成月度快照，并按历史可用日期连接财务与股票池。仅有原始价格时不猜测总回报。
+
+数据保存在默认的 `runtime/research.sqlite3`（已忽略，不提交 Git）。可用 `python app.py --data-dir /your/data/directory` 或 `QUANTIFY_DATA_DIR` 指定位置。备份时先停止程序，再复制整个数据目录。
+
+字段契约、样本量要求、时点规则和备份说明见 [数据契约](docs/DATA_CONTRACTS.md)。默认封存 12 个月时，工作台 3/6/12 月持有期分别至少需要 86/92/104 个月数据，建议更多。旧首页研究仍采用原先窗口，不会与工作台得到相同测试起点。
+
+**目前没有在线行情或真实数据覆盖验收。** CSV 的来源与可用时间由用户声明；股票池历史事件可查询，但动态股票池研究、退市结算、组合成交、自动每日下载和 AI 调用仍未实现。实验为固定池单笔收益研究，不是组合净值回测。
 
 ## 使用
 
@@ -98,8 +116,12 @@ quantify/data.py         五股合成数据、DemoDataProvider
 quantify/core.py         基本面比率、估值、GBM、分位数/直方图
 quantify/research.py     月度CSV、因子、滚动样本外实验
 quantify/service.py      报告编排与完整CSV导出
-quantify/interfaces.py   真实数据/组合回测/概率校准协议
-static/                 单页原生HTML/CSS/JS
+quantify/interfaces.py   数据适配/组合回测/概率校准协议
+quantify/datasets.py     CSV 契约、增量快照、时点查询、日线转月度
+quantify/storage.py      本地 SQLite 不可变记录
+quantify/factors.py      因子计算、基线注册与参数版本
+quantify/workbench.py    工作台应用服务、实验记录、留出和比较
+static/                 个股页面与研究工作台 HTML/CSS/JS
 tests/                  核心、研究、防前视、HTTP测试
 AGENTS.md / agnet.md     开发指令与用户指定入口
 HANDOFF.md              当前交接状态和下一步任务

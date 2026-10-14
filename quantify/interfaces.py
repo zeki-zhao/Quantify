@@ -1,4 +1,7 @@
-"""Future adapters. Protocols only: no backtest or calibration is implemented."""
+"""Adapter contracts; CSVDataAdapter implements ResearchDataAdapter locally.
+
+Portfolio backtesting and calibration remain future protocols.
+"""
 from typing import Protocol
 
 
@@ -21,4 +24,15 @@ class ProbabilityCalibrator(Protocol):
     def predict(self, probabilities: list) -> list: ...
     def diagnostics(self) -> dict:
         """Report reliability bins, Brier score, log loss and independent test window."""
+        ...
+
+
+class ResearchDataAdapter(Protocol):
+    def read(self, kind: str, raw: str) -> tuple[list, list]:
+        """Return validated normalized rows and quality warnings; no storage side effects.
+
+        External download/update adapters should map provider-specific fields to
+        datasets.SCHEMAS, declare source and adjustment, then use import_snapshot.
+        Missing dividend or point-in-time fields must never be synthesized.
+        """
         ...

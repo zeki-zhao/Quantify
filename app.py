@@ -1,6 +1,8 @@
 """Start with: python app.py --port 8000 (Python 3.10+, no dependencies)."""
 import argparse
 import json
+import os
+import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -8,14 +10,33 @@ from pathlib import Path
 from quantify.data import DemoDataProvider
 from quantify.research import demo_csv, evaluate
 from quantify.service import analyze, export_csv
+from quantify.workbench import Workbench
+from quantify.datasets import SCHEMAS
 
 ROOT = Path(__file__).resolve().parent
 WORK = threading.BoundedSemaphore(1)
 STATIC = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
-          "/style.css": ("style.css", "text/css")}
+          "/style.css": ("style.css", "text/css"),
+          "/workspace": ("workspace.html", "text/html"),
+          "/workspace.js": ("workspace.js", "text/javascript"),
+          "/workspace.css": ("workspace.css", "text/css")}
+
+WORKSPACE_INIT = threading.Lock()
+
+
+def reject_constant(value):
+    raise ValueError("JSON 不接受 NaN 或 Infinity")
 
 
 class Handler(BaseHTTPRequestHandler):
+    def workbench(self):
+        # Scoped to this server so tests and multiple instances can use separate stores.
+        with WORKSPACE_INIT:
+            if not hasattr(self.server, 'workbench'):
+                directory = getattr(self.server, 'data_dir', os.environ.get('QUANTIFY_DATA_DIR', str(ROOT / 'runtime')))
+                self.server.workbench = Workbench(directory)
+        return self.server.workbench
+
     def send_data(self, status, content, mime="application/json"):
         raw = content.encode("utf-8")
         self.send_response(status)
@@ -31,6 +52,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_data(status, json.dumps(value, ensure_ascii=False, allow_nan=False))
 
     def do_GET(self):
+        if self.path.startswith('/api/workspace/templates/'):
+            kind = self.path.removeprefix('/api/workspace/templates/').removesuffix('.csv')
+            if kind not in SCHEMAS:
+                self.send_json(404, {'error': '模板不存在'})
+            else:
+                self.send_data(200, ','.join(SCHEMAS[kind]) + '\n', 'text/csv')
+            return
+        if self.path.startswith('/api/workspace/'):
+            try:
+                self.send_json(200, self.workbench().get(self.path))
+            except ValueError as exc:
+                self.send_json(400, {'error': str(exc)})
+            except (OSError, sqlite3.Error):
+                self.send_json(503, {'error': '本地存储不可用，请检查运行目录权限或备份'})
+            return
         if self.path == "/api/stocks":
             self.send_json(200, DemoDataProvider().list_stocks())
         elif self.path == "/api/research-template.csv":
@@ -42,7 +78,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "路径不存在"})
 
     def do_POST(self):
-        if self.path not in ("/api/analyze", "/api/research"):
+        if self.path not in ("/api/analyze", "/api/research") and self.path not in {
+                "/api/workspace/" + name for name in ("import", "demo", "monthly", "as-of", "factors", "experiments", "compare", "replay")}:
             self.send_json(404, {"error": "路径不存在"})
             return
         if self.headers.get_content_type() != "application/json":
@@ -53,12 +90,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 2_000_000:
-                raise ValueError("请求大小必须为 1 字节至 2 MB")
+            limit = 10_000_000 if self.path.startswith("/api/workspace/") else 2_000_000
+            if not 0 < length <= limit:
+                raise ValueError(f"请求大小必须为 1 字节至 {limit // 1_000_000} MB")
             self.connection.settimeout(10)
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"), parse_constant=reject_constant)
             if not isinstance(payload, dict):
                 raise ValueError("请求必须为 JSON 对象")
+            if self.path.startswith("/api/workspace/"):
+                self.send_json(200, self.workbench().post(self.path, payload))
+                return
             if self.path == "/api/analyze":
                 report = analyze(payload)
             else:
@@ -70,8 +111,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"report": report, "csv": export_csv(report)})
         except (ValueError, TypeError, UnicodeError) as exc:
             self.send_json(400, {"error": str(exc)})
-        except TimeoutError:
-            self.send_json(408, {"error": "读取请求超时"})
+        except (OSError, sqlite3.Error) as exc:
+            if isinstance(exc, TimeoutError):
+                self.send_json(408, {"error": "读取请求超时"})
+            else:
+                self.send_json(503, {"error": "本地存储不可用，请检查运行目录权限或备份"})
         finally:
             WORK.release()
 
@@ -79,8 +123,10 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description="本地个人量化研究 demo")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--data-dir", default=os.environ.get("QUANTIFY_DATA_DIR", str(ROOT / "runtime")), help="研究数据库目录")
     args = parser.parse_args()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server.data_dir = args.data_dir
     print(f"Quantify demo: http://127.0.0.1:{server.server_port}  (Ctrl+C 停止)", flush=True)
     try:
         server.serve_forever()
