@@ -1,0 +1,15 @@
+{
+  "checked_at": "2026-10-15T13:33:45.867140+08:00",
+  "results": {
+    "sina": {
+      "ok": false,
+      "category": "network_policy",
+      "error": "网络代理拒绝建立连接；尚未连接到行情服务器，这不是额度判断"
+    },
+    "eastmoney": {
+      "ok": false,
+      "category": "network_policy",
+      "error": "网络代理拒绝建立连接；尚未连接到行情服务器，这不是额度判断"
+    }
+  }
+}
