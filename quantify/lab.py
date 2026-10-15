@@ -1,5 +1,6 @@
 """Manual ChatGPT collaboration: persistent sessions, scoped tools and bounded rounds."""
 from .core import integer, number
+from .market import MarketService
 from .expressions import GRAMMAR, validate_expression
 from .jobs import QueueManager
 from .proposals import parse_proposals, PROPOSAL_SCHEMA
@@ -18,8 +19,10 @@ class Lab:
         self.workbench = Workbench(directory)
         self.queue = QueueManager(directory)
         self.store = self.queue.store
+        self.market = MarketService(directory, self.store)
 
     def close(self):
+        self.market.close()
         self.queue.close()
 
     def submit_experiment(self, *, request=None, replay_id=None, timeout_seconds=120):
@@ -87,6 +90,8 @@ class Lab:
             baseline = self.store.get('experiment', old['payload']['baseline_id'])
             progress = initial_progress(baseline)
             ResearchTools(self.store.directory, baseline['id'], progress)
+        elif old['kind'] == 'history':
+            progress = {}
         else:
             if old['payload']['engine'] != engine_fingerprint():
                 raise ValueError('代码版本改变，请创建新实验')
@@ -101,7 +106,7 @@ class Lab:
                     'formula_language': GRAMMAR, 'proposal_schema': PROPOSAL_SCHEMA}
         if path == '/api/lab/jobs':
             return [{key: value for key, value in job.items() if key not in ('payload', 'progress', 'owner')}
-                    | {'goal': job['payload'].get('goal', '单次因子实验')}
+                    | {'goal': job['payload'].get('goal', '历史日线下载' if job['kind'] == 'history' else '单次因子实验')}
                     for job in self.store.jobs()]
         prefix = '/api/lab/jobs/'
         if path.startswith(prefix):

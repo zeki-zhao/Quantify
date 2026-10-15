@@ -34,5 +34,7 @@ class ResearchDataAdapter(Protocol):
         External download/update adapters should map provider-specific fields to
         datasets.SCHEMAS, declare source and adjustment, then use import_snapshot.
         Missing dividend or point-in-time fields must never be synthesized.
+        Online quote/history contracts are QuoteProvider/HistoryProvider in
+        market_providers.py. Intraday quotes remain separate from finalized daily CSV.
         """
         ...

@@ -22,7 +22,7 @@ async function detail(){
  const id=selected,record=await api('/api/lab/jobs/'+id);if(id!==selected)return;job=record;$('detail').hidden=false;
  $('job-info').textContent=`${job.id} · ${states[job.status]}${job.error?' · '+job.error:''}`;
  const p=job.progress,c=job.payload;
- $('job-progress').textContent=job.kind==='research'?`轮次 ${p.rounds}/${c.max_rounds} · 候选 ${p.candidates}/${c.max_candidates} · 连续无改进 ${p.no_improvement}/${c.patience} · 累计计算 ${job.elapsed_seconds.toFixed(1)}/${job.timeout_seconds} 秒 · 最佳实验 ${p.best_id}`:`单次实验 · ${job.elapsed_seconds.toFixed(1)}/${job.timeout_seconds} 秒`;
+ $('job-progress').textContent=job.kind==='research'?`轮次 ${p.rounds}/${c.max_rounds} · 候选 ${p.candidates}/${c.max_candidates} · 连续无改进 ${p.no_improvement}/${c.patience} · 累计计算 ${job.elapsed_seconds.toFixed(1)}/${job.timeout_seconds} 秒 · 最佳实验 ${p.best_id}`:`${job.kind==='history'?'历史下载 '+(p.downloaded_symbols??0)+'/'+(p.total_symbols??'?')+' 只':'单次实验'} · ${job.elapsed_seconds.toFixed(1)}/${job.timeout_seconds} 秒`;
  $('pause').disabled=job.kind!=='research'||terminal.includes(job.status)||job.status==='paused'||!!job.stop_requested;
  $('resume').disabled=job.status!=='paused';$('cancel').disabled=terminal.includes(job.status)||!!job.stop_requested;
  $('retry').disabled=!['failed','cancelled','timed_out','interrupted'].includes(job.status);

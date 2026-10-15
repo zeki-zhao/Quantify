@@ -1,5 +1,8 @@
 """Queue worker entry point. No arbitrary code or remote model calls are executed."""
 import sys
+from contextlib import closing
+from .market import MarketStore, download_history
+from .datasets import snapshot_summary
 
 from .jobs import JobStore, LostLease
 from .proposals import ManualProposalProvider
@@ -109,6 +112,23 @@ def execute(directory, job_id, owner):
     try:
         if job['kind'] == 'research':
             run_research(store, job, owner)
+        elif job['kind'] == 'history':
+            market = MarketStore(directory)
+            def checkpoint(progress):
+                current = store.job(job_id)
+                if current['stop_requested']:
+                    raise StopRequested()
+                store.checkpoint(job_id, owner, progress)
+            snapshot = download_history(store, job['payload']['request'], checkpoint=checkpoint)
+            with closing(store.connect()) as db, db:
+                db.execute('BEGIN IMMEDIATE')
+                store._lease(db, job_id, owner)
+                if db.execute('SELECT stop_requested FROM jobs WHERE id=?', (job_id,)).fetchone()[0]:
+                    raise StopRequested()
+                market.write(db, 'latest_snapshot_id', snapshot['id'])
+                market.write(db, 'latest_snapshot_summary', snapshot_summary(snapshot))
+                market.write(db, 'history_status', {'job_id': job_id, 'status': 'succeeded', 'snapshot_id': snapshot['id']})
+            store.finish(job_id, owner, 'succeeded', result={'snapshot_id': snapshot['id']})
         else:
             if job['payload']['engine'] != engine_fingerprint():
                 raise ValueError('排队后计算代码发生变化，请重新提交任务')
