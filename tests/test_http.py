@@ -48,6 +48,37 @@ class HTTPTests(unittest.TestCase):
                 self.request(path,payload)
             self.assertEqual(error.exception.code,status)
 
+    def test_slow_response_does_not_keep_computation_busy(self):
+        response_started, release_response = threading.Event(), threading.Event()
+        first_response = threading.Lock()
+        class SlowHandler(Handler):
+            def send_json(self, status, value):
+                if first_response.acquire(blocking=False):
+                    response_started.set()
+                    release_response.wait(5)
+                super().send_json(status, value)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), SlowHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        statuses = []
+        def request():
+            try:
+                with urlopen(Request(f'http://127.0.0.1:{server.server_port}/api/analyze',
+                             data=b'{}', headers={'Content-Type': 'application/json'}), timeout=10) as response:
+                    statuses.append(response.status)
+            except HTTPError as error:
+                statuses.append(error.code)
+                error.close()
+        client = threading.Thread(target=request, daemon=True)
+        try:
+            client.start()
+            self.assertTrue(response_started.wait(3))
+            request()
+            self.assertEqual(statuses, [400])
+        finally:
+            release_response.set(); client.join(timeout=5)
+            server.shutdown(); server.server_close(); thread.join()
+        self.assertEqual(statuses, [400, 400])
+
 
 if __name__ == '__main__':
     unittest.main()

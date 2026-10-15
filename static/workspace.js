@@ -6,10 +6,11 @@ const pct = value => `${(value * 100).toFixed(2)}%`;
 const table = (heads, rows) => `<table><thead><tr>${heads.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(cell=>`<td>${esc(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
 let snapshots = [], factors = [], runs = [], currentData = null, currentRun = null;
 let busy = false;
-const kindNames = {daily:'日线',monthly:'月度',financials:'财务',universe:'股票池'};
+const kindNames = {daily:'日线',monthly:'月度总回报',monthly_price:'月度价格收益',financials:'财务',universe:'股票池'};
 const help = {
   daily:'date,symbol,open,high,low,close,volume,total_return_index,available_at。价格单位元/股，成交量为股；total_return_index 可留空，留空时不能生成总回报研究。日期为 YYYY-MM-DD，日线可用时间按当日收盘之后解释。',
   monthly:'date,symbol,total_return_index,quality,value,available_at。含分红指数必填；财务列可留空，但只能用于动量/低波动。完整研究需要连续月度和固定股票池，封存 12 个月时，3/6/12 月持有期分别至少需要 86/92/104 个月。',
+  monthly_price:'date,symbol,close,quality,value,available_at。仅未复权价格；收益不含现金分红，拆股/送转/配股跳变未调整。财务列可留空；未提供时只能选价格类因子。',
   financials:'period_end,symbol,quality,value,available_at。质量与价值是由你计算并声明口径的因子，数值越大越好；修订使用新的实际披露日期。由于只有日期，财务数据在披露日之后才用于收盘信号。',
   universe:'date,symbol,member,available_at。date 为生效日期，member=1 加入、0 退出；必须包含初始股票池成员。历史事件可保存和查询，动态池研究尚不支持。'
 };
@@ -18,6 +19,20 @@ async function api(path, payload) {
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || '请求失败');
   return body;
+}
+async function queuedExperiment(payload) {
+  const response=await fetch('/api/lab/experiments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  let job=await response.json();
+  if(!response.ok) throw new Error(job.error);
+  while(['queued','running'].includes(job.status)) {
+    $('status').textContent=`后台任务 ${short(job.id)} · ${job.status}。可在 AI 研究室查看或取消，离开页面不影响计算。`;
+    await new Promise(resolve=>setTimeout(resolve,500));
+    const polled=await fetch('/api/lab/jobs/'+job.id);
+    job=await polled.json();
+    if(!polled.ok) throw new Error(job.error);
+  }
+  if(job.result?.experiment_id) return api('experiments/'+job.result.experiment_id);
+  throw new Error(job.error || '任务已停止：'+job.status);
 }
 function download(filename, body) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(body,null,2)],{type:'application/json'}));
@@ -62,9 +77,9 @@ async function refresh() {
   options('daily-snapshot',snapshots.filter(s=>s.kind==='daily'),snapshotLabel);
   options('finance-snapshot',snapshots.filter(s=>s.kind==='financials'),snapshotLabel,'不使用财务因子');
   options('universe-snapshot',snapshots.filter(s=>s.kind==='universe'),snapshotLabel,'使用日线全部代码（固定池）');
-  options('run-snapshot',snapshots.filter(s=>s.kind==='monthly'),snapshotLabel);
+  options('run-snapshot',snapshots.filter(s=>['monthly','monthly_price'].includes(s.kind)),snapshotLabel);
   options('factor-parent',factors,factorLabel);
-  $('factor-list').innerHTML=factors.map(f=>`<div class="factor-card"><h3>${esc(f.name)}</h3><code>${short(f.id)}</code><p>窗口 ${f.lookback} 月 · 跳过 ${f.skip} 月</p><p>${esc(f.reason)}</p><p class="muted">${f.parent_id?'父版本 '+short(f.parent_id):'内置基线'}</p></div>`).join('');
+  $('factor-list').innerHTML=factors.map(f=>`<div class="factor-card"><h3>${esc(f.name)}</h3><code>${short(f.id)}</code><p>${f.kind==='expression'?esc(f.expression):`窗口 ${f.lookback} 月 · 跳过 ${f.skip} 月`}</p><p>${esc(f.reason)}</p><p class="muted">${f.parent_id?'父版本 '+short(f.parent_id):'内置基线'}</p></div>`).join('');
   const checked=new Set([...document.querySelectorAll('#factor-options input:checked')].map(i=>i.value));
   $('factor-options').innerHTML=factors.map(f=>`<label><input type="checkbox" value="${f.id}" ${checked.has(f.id)?'checked':''}>${esc(factorLabel(f))}</label>`).join('');
   $('runs').innerHTML=table(['实验','状态','数据快照','因子数量','时间'],runs.map(r=>[short(r.id),r.status==='completed'?'已完成':'失败',short(String(r.request.snapshot_id)),r.request.factor_ids?.length??0,r.created_at]));
@@ -94,7 +109,7 @@ function showRun(run) {
 }
 $('kind').onchange=()=>{
   const kind=$('kind').value;
-  $('basis').value=kind==='monthly'?'total_return_index':kind==='daily'?'unadjusted':'not_applicable';describeImport();
+  $('basis').value=kind==='monthly'?'total_return_index':['daily','monthly_price'].includes(kind)?'unadjusted':'not_applicable';describeImport();
 };
 $('parent').onchange=()=>{
   const parent=snapshots.find(s=>s.id===$('parent').value);if(!parent)return;
@@ -102,7 +117,7 @@ $('parent').onchange=()=>{
 };
 $('factor-parent').onchange=()=>{
   const parent=factors.find(f=>f.id===$('factor-parent').value);if(!parent)return;
-  $('lookback').value=parent.lookback;$('skip').value=parent.skip;
+  $('lookback').value=parent.lookback;$('skip').value=parent.skip;$('factor-expression').value=parent.expression||'';
 };
 $('demo').onclick=()=>action(async()=>{await api('demo',{});await refresh();});
 $('import-form').onsubmit=event=>{event.preventDefault();action(async()=>{
@@ -111,16 +126,16 @@ $('import-form').onsubmit=event=>{event.preventDefault();action(async()=>{
   await refresh();showData(await api('snapshots/'+snapshot.id));
 });};
 $('monthly-form').onsubmit=event=>{event.preventDefault();action(async()=>{
-  await api('monthly',{daily_id:$('daily-snapshot').value,financials_id:$('finance-snapshot').value||null,universe_id:$('universe-snapshot').value||null});await refresh();
+  await api('monthly',{daily_id:$('daily-snapshot').value,financials_id:$('finance-snapshot').value||null,universe_id:$('universe-snapshot').value||null,return_basis:$('return-basis').value});await refresh();
 });};
 $('asof-form').onsubmit=event=>{event.preventDefault();action(async()=>showData(await api('as-of',{snapshot_id:$('asof-snapshot').value,cutoff:$('asof-date').value})));};
 $('factor-form').onsubmit=event=>{event.preventDefault();action(async()=>{
-  await api('factors',{parent_id:$('factor-parent').value,name:$('factor-name').value,reason:$('reason').value,lookback:Number($('lookback').value),skip:Number($('skip').value)});await refresh();
+  await api('factors',{parent_id:$('factor-parent').value,name:$('factor-name').value,reason:$('reason').value,expression:$('factor-expression').value.trim()||null,lookback:Number($('lookback').value),skip:Number($('skip').value)});await refresh();
 });};
 $('run-form').onsubmit=event=>{event.preventDefault();action(async()=>{
   const factor_ids=[...document.querySelectorAll('#factor-options input:checked')].map(input=>input.value);
   if(!factor_ids.length||factor_ids.length>10)throw new Error('请选择 1 至 10 个因子版本');
-  const run=await api('experiments',{snapshot_id:$('run-snapshot').value,factor_ids,horizon:Number($('horizon').value),top_k:Number($('top-k').value),cost_bps:Number($('cost').value),holdout_months:Number($('holdout').value)});
+  const run=await queuedExperiment({request:{snapshot_id:$('run-snapshot').value,factor_ids,horizon:Number($('horizon').value),top_k:Number($('top-k').value),cost_bps:Number($('cost').value),holdout_months:Number($('holdout').value)}});
   await refresh();showRun(run);if(run.status==='failed')throw new Error('实验失败并已保存：'+run.error);
 });};
 $('compare-form').onsubmit=event=>{event.preventDefault();action(async()=>{
@@ -128,7 +143,7 @@ $('compare-form').onsubmit=event=>{event.preventDefault();action(async()=>{
   const delta=result.difference_right_minus_left;
   $('comparison').innerHTML=table(['平均收益差','上涨比例差','最差收益差','样本数差'],[[pct(delta.mean_return),pct(delta.positive_rate),pct(delta.worst_return),delta.observations]])+`<p>${esc(result.note)}</p>`;
 });};
-$('replay').onclick=()=>action(async()=>{const run=await api('replay',{experiment_id:currentRun.id});await refresh();showRun(run);if(run.status==='failed')throw new Error(run.error);});
+$('replay').onclick=()=>action(async()=>{const run=await queuedExperiment({replay_id:currentRun.id});await refresh();showRun(run);if(run.status==='failed')throw new Error(run.error);});
 $('download-data').onclick=()=>{if(currentData)download('quantify-snapshot.json',currentData);};
 $('download-run').onclick=()=>{if(currentRun)download('quantify-experiment.json',currentRun);};
 describeImport();action(refresh);

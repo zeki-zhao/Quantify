@@ -10,12 +10,14 @@ from pathlib import Path
 from quantify.data import DemoDataProvider
 from quantify.research import demo_csv, evaluate
 from quantify.service import analyze, export_csv
+from quantify.lab import Lab
 from quantify.workbench import Workbench
 from quantify.datasets import SCHEMAS
 
 ROOT = Path(__file__).resolve().parent
 WORK = threading.BoundedSemaphore(1)
-STATIC = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
+STATIC = {"/lab": ("lab.html", "text/html"), "/lab.js": ("lab.js", "text/javascript"),
+          "/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
           "/style.css": ("style.css", "text/css"),
           "/workspace": ("workspace.html", "text/html"),
           "/workspace.js": ("workspace.js", "text/javascript"),
@@ -36,6 +38,13 @@ class Handler(BaseHTTPRequestHandler):
                 directory = getattr(self.server, 'data_dir', os.environ.get('QUANTIFY_DATA_DIR', str(ROOT / 'runtime')))
                 self.server.workbench = Workbench(directory)
         return self.server.workbench
+
+    def lab(self):
+        with WORKSPACE_INIT:
+            if not hasattr(self.server, 'lab'):
+                directory = getattr(self.server, 'data_dir', os.environ.get('QUANTIFY_DATA_DIR', str(ROOT / 'runtime')))
+                self.server.lab = Lab(directory)
+        return self.server.lab
 
     def send_data(self, status, content, mime="application/json"):
         raw = content.encode("utf-8")
@@ -59,9 +68,9 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_data(200, ','.join(SCHEMAS[kind]) + '\n', 'text/csv')
             return
-        if self.path.startswith('/api/workspace/'):
+        if self.path.startswith(('/api/workspace/', '/api/lab/')):
             try:
-                self.send_json(200, self.workbench().get(self.path))
+                self.send_json(200, (self.lab() if self.path.startswith('/api/lab/') else self.workbench()).get(self.path))
             except ValueError as exc:
                 self.send_json(400, {'error': str(exc)})
             except (OSError, sqlite3.Error):
@@ -78,15 +87,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "路径不存在"})
 
     def do_POST(self):
-        if self.path not in ("/api/analyze", "/api/research") and self.path not in {
+        is_lab = self.path in {'/api/lab/' + name for name in ('experiments', 'sessions', 'proposals', 'control', 'retry', 'validate')}
+        if not is_lab and self.path not in ("/api/analyze", "/api/research") and self.path not in {
                 "/api/workspace/" + name for name in ("import", "demo", "monthly", "as-of", "factors", "experiments", "compare", "replay")}:
             self.send_json(404, {"error": "路径不存在"})
             return
         if self.headers.get_content_type() != "application/json":
             self.send_json(415, {"error": "仅接受 application/json"})
-            return
-        if not WORK.acquire(blocking=False):
-            self.send_json(429, {"error": "当前有计算正在运行，请稍后重试"})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -97,18 +104,18 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8"), parse_constant=reject_constant)
             if not isinstance(payload, dict):
                 raise ValueError("请求必须为 JSON 对象")
-            if self.path.startswith("/api/workspace/"):
-                self.send_json(200, self.workbench().post(self.path, payload))
-                return
-            if self.path == "/api/analyze":
-                report = analyze(payload)
+            if is_lab:
+                result = self.lab().post(self.path, payload)
             else:
-                if set(payload) - {"csv_text", "horizon", "top_k", "cost_bps", "source"}:
-                    raise ValueError("研究参数字段无效")
-                if payload.get("csv_text") is not None and (not isinstance(payload.get("source"), str) or not payload["source"].strip()):
-                    raise ValueError("导入数据必须声明来源与价格复权/分红口径")
-                report = evaluate(**payload)
-            self.send_json(200, {"report": report, "csv": export_csv(report)})
+                if not WORK.acquire(blocking=False):
+                    self.send_json(429, {"error": "当前有计算正在运行，请稍后重试"})
+                    return
+                try:
+                    result = self.compute_request(payload)
+                finally:
+                    # A slow response consumer must not hold the computation slot.
+                    WORK.release()
+            self.send_json(200, result)
         except (ValueError, TypeError, UnicodeError) as exc:
             self.send_json(400, {"error": str(exc)})
         except (OSError, sqlite3.Error) as exc:
@@ -116,8 +123,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(408, {"error": "读取请求超时"})
             else:
                 self.send_json(503, {"error": "本地存储不可用，请检查运行目录权限或备份"})
-        finally:
-            WORK.release()
+
+    def compute_request(self, payload):
+        if self.path.startswith("/api/workspace/"):
+            return self.workbench().post(self.path, payload)
+        if self.path == "/api/analyze":
+            report = analyze(payload)
+        else:
+            if set(payload) - {"csv_text", "horizon", "top_k", "cost_bps", "source"}:
+                raise ValueError("研究参数字段无效")
+            if payload.get("csv_text") is not None and (not isinstance(payload.get("source"), str) or not payload["source"].strip()):
+                raise ValueError("导入数据必须声明来源与价格复权/分红口径")
+            report = evaluate(**payload)
+        return {"report": report, "csv": export_csv(report)}
 
 
 def main():
@@ -127,12 +145,14 @@ def main():
     args = parser.parse_args()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     server.data_dir = args.data_dir
+    server.lab = Lab(args.data_dir)
     print(f"Quantify demo: http://127.0.0.1:{server.server_port}  (Ctrl+C 停止)", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        server.lab.close()
         server.server_close()
 
 

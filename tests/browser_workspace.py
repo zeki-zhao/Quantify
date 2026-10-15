@@ -75,3 +75,4 @@ with tempfile.TemporaryDirectory() as temp:
             print('PASS: browser import, version, experiment, replay, comparison, JSON export, reload persistence, mobile width, legacy page; no JS errors')
     finally:
         server.shutdown();server.server_close();thread.join()
+        if hasattr(server, 'lab'): server.lab.close()
