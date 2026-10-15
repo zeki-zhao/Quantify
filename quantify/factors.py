@@ -1,6 +1,7 @@
 """Small parameterized factor registry. Definitions are data, never executable strings."""
 import math
 from statistics import mean, pstdev
+from .expressions import validate_expression, evaluate_expression
 
 KINDS = ('momentum', 'quality', 'value', 'low_volatility', 'combined')
 NAMES = {'momentum': '动量', 'quality': '盈利质量', 'value': '价值',
@@ -11,8 +12,10 @@ BUILTINS = tuple({'id': kind, 'key': kind, 'kind': kind, 'lookback': 6, 'skip': 
 
 
 def validate_spec(spec):
-    if spec.get('kind') not in KINDS:
+    if spec.get('kind') not in (*KINDS, 'expression'):
         raise ValueError('不支持的因子类型')
+    if spec['kind'] == 'expression':
+        validate_expression(spec.get('expression'))
     for name, low, high in (('lookback', 2, 24), ('skip', 0, 6)):
         value = spec.get(name)
         if type(value) is not int or not low <= value <= high:
@@ -30,10 +33,14 @@ def initialize_factors(store):
         store.put('factor', {key: value for key, value in spec.items() if key != 'id'})
 
 
-def create_version(store, *, parent_id, name, reason, lookback=6, skip=0):
+def create_version(store, *, parent_id, name, reason, lookback=6, skip=0, expression=None):
     parent = store.get('factor', parent_id)
     spec = {'key': parent['key'], 'kind': parent['kind'], 'name': name, 'reason': reason,
             'lookback': lookback, 'skip': skip, 'parent_id': parent_id}
+    if expression is not None:
+        spec.update(kind='expression', expression=expression, lookback=6, skip=0)
+    elif parent['kind'] == 'expression':
+        spec['expression'] = parent['expression']
     validate_spec(spec)
     return store.put('factor', spec)
 
@@ -43,20 +50,32 @@ def required_fields(specs):
     for spec in specs:
         if spec['kind'] in ('quality', 'value'):
             needed.add(spec['kind'])
+        elif spec['kind'] == 'expression':
+            needed.update(validate_expression(spec['expression'])['required_fields'])
         elif spec['kind'] == 'combined':
             needed.update(('quality', 'value'))
     return needed
 
 
 def history_length(specs):
-    return max((spec['lookback'] + spec['skip'] if spec['kind'] not in ('quality', 'value') else 0)
+    return max(validate_expression(spec['expression'])['history_months'] if spec['kind'] == 'expression'
+               else (spec['lookback'] + spec['skip'] if spec['kind'] not in ('quality', 'value') else 0)
                for spec in specs)
+
+
+def series_level(row):
+    """Use the explicitly parsed series without aliasing prices as a total-return index."""
+    return row['close'] if 'close' in row else row['total_return_index']
 
 
 def calculate(panel, index, specs):
     scores = {symbol: {} for symbol in panel[index]}
     for spec in specs:
         kind, factor_id = spec['kind'], spec['id']
+        if kind == 'expression':
+            for symbol, value in evaluate_expression(spec['expression'], panel, index).items():
+                scores[symbol][factor_id] = value
+            continue
         raw = {}
         for symbol, row in panel[index].items():
             if kind in ('quality', 'value'):
@@ -68,7 +87,7 @@ def calculate(panel, index, specs):
             start = end - spec['lookback']
             if start < 0:
                 raise ValueError('因子历史窗口不足')
-            prices = [panel[i][symbol]['total_return_index'] for i in range(start, end + 1)]
+            prices = [series_level(panel[i][symbol]) for i in range(start, end + 1)]
             momentum = prices[-1] / prices[0] - 1
             volatility = -pstdev([math.log(b / a) for a, b in zip(prices, prices[1:])])
             if kind == 'momentum':

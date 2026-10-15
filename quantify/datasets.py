@@ -6,11 +6,12 @@ import math
 import re
 from datetime import date
 
-from .research import FIELDS as MONTHLY_FIELDS, parse_panel
+from .research import FIELDS as MONTHLY_FIELDS, PRICE_FIELDS, parse_panel
 
 SCHEMAS = {
     'daily': ['date', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'total_return_index', 'available_at'],
     'monthly': MONTHLY_FIELDS,
+    'monthly_price': PRICE_FIELDS,
     'financials': ['period_end', 'symbol', 'quality', 'value', 'available_at'],
     'universe': ['date', 'symbol', 'member', 'available_at'],
 }
@@ -78,7 +79,7 @@ def _parse_rows(kind, raw):
         available = day(row['available_at'])
         if kind in ('daily', 'financials') and available < event:
             raise ValueError('可用日期不能早于行情日期或财务报告期')
-        if kind == 'monthly' and available > event:
+        if kind in ('monthly', 'monthly_price') and available > event:
             raise ValueError('因子可用日期晚于观察日期（未来数据）')
         if kind == 'daily':
             for field in ('open', 'high', 'low', 'close'):
@@ -87,11 +88,13 @@ def _parse_rows(kind, raw):
             row['total_return_index'] = numeric(row['total_return_index'], '含分红指数', .000001, True)
             if not row['low'] <= min(row['open'], row['close']) <= max(row['open'], row['close']) <= row['high']:
                 raise ValueError('OHLC 高低价格不一致')
-        elif kind in ('monthly', 'financials'):
+        elif kind in ('monthly', 'monthly_price', 'financials'):
             for field in ('quality', 'value'):
-                row[field] = numeric(row[field], field, optional=kind == 'monthly')
+                row[field] = numeric(row[field], field, optional=kind in ('monthly', 'monthly_price'))
             if kind == 'monthly':
                 row['total_return_index'] = numeric(row['total_return_index'], '含分红指数', .000001)
+            elif kind == 'monthly_price':
+                row['close'] = numeric(row['close'], '未复权价格', .000001)
         else:
             if row['member'] not in ('0', '1'):
                 raise ValueError('member 必须为 0（退出）或 1（加入）')
@@ -135,6 +138,8 @@ def _prepare_snapshot(store, *, kind, raw_csv, source, price_basis, is_demo, par
         raise ValueError('必须声明 is_demo 布尔值和有效价格口径')
     if kind == 'monthly' and price_basis != 'total_return_index':
         raise ValueError('月度研究必须使用含分红再投资指数')
+    if kind == 'monthly_price' and price_basis != 'unadjusted':
+        raise ValueError('价格研究当前仅支持明确未复权的价格，不能混用复权与总回报')
     if kind in ('financials', 'universe') and price_basis != 'not_applicable':
         raise ValueError('财务和股票池的价格口径应为 not_applicable')
     if kind == 'daily' and price_basis == 'not_applicable':
@@ -169,8 +174,10 @@ def _prepare_snapshot(store, *, kind, raw_csv, source, price_basis, is_demo, par
                      '含分红指数与复权口径由导入者声明，未核验公司行动。']
         if any(row['total_return_index'] is None for row in rows):
             warnings.append('缺少含分红指数：可保存行情，但不能由原始价格推定总回报。')
-    if kind == 'monthly':
+    if kind in ('monthly', 'monthly_price'):
         warnings.append('平衡月度面板可能存在幸存者偏差；研究前仍需完整窗口校验。')
+    if kind == 'monthly_price':
+        warnings.append('未复权价格收益不含现金分红，拆股/送转/配股等跳变未调整；不代表投资总回报。')
     if kind in ('financials', 'universe'):
         warnings.append('available_at 为用户声明的历史可用时间，未向公告源核验。')
     if replaced:
@@ -180,6 +187,9 @@ def _prepare_snapshot(store, *, kind, raw_csv, source, price_basis, is_demo, par
             'rows': rows, 'row_count': len(rows), 'symbols': symbols, 'date_range': [dates[0], dates[-1]],
             'warnings': warnings, 'units': {'prices': 'CNY/share or declared index', 'volume': 'shares',
                                            'total_return_index': 'dimensionless; dividends reinvested'}}
+    if kind == 'monthly_price':
+        body['units'].pop('total_return_index')
+        body['units']['close'] = 'CNY/share; unadjusted; cash dividends excluded'
     return body
 
 
@@ -205,14 +215,20 @@ def as_of_rows(snapshot, cutoff):
     return [latest[key] for key in sorted(latest)]
 
 
-def monthly_from_daily(store, *, daily_id, financials_id=None, universe_id=None):
+def monthly_from_daily(store, *, daily_id, financials_id=None, universe_id=None, return_basis='total_return'):
+    if return_basis not in ('total_return', 'price'):
+        raise ValueError('收益口径无效')
+    kind = 'monthly_price' if return_basis == 'price' else 'monthly'
+    level_key = 'close' if return_basis == 'price' else 'total_return_index'
     daily = store.get('snapshot', daily_id)
     if daily['kind'] != 'daily':
         raise ValueError('需要日线快照')
+    if return_basis == 'price' and daily['price_basis'] != 'unadjusted':
+        raise ValueError('价格收益研究必须选择未复权日线')
     financials = store.get('snapshot', financials_id) if financials_id else None
     universe = store.get('snapshot', universe_id) if universe_id else None
-    for obj, kind in ((financials, 'financials'), (universe, 'universe')):
-        if obj and (obj['kind'] != kind or obj['is_demo'] != daily['is_demo']):
+    for obj, expected_kind in ((financials, 'financials'), (universe, 'universe')):
+        if obj and (obj['kind'] != expected_kind or obj['is_demo'] != daily['is_demo']):
             raise ValueError('关联快照类型或演示标识不一致')
     # Drop the final calendar month: no exchange calendar is available to certify its completion.
     by_month = {}
@@ -242,21 +258,23 @@ def monthly_from_daily(store, *, daily_id, financials_id=None, universe_id=None)
                 known[row['symbol']] = row
         for symbol in sorted(members):
             row = observed[symbol]
-            if row['available_at'] > cutoff or row['total_return_index'] is None:
+            if row['available_at'] > cutoff or row[level_key] is None:
                 raise ValueError('月末行情尚不可用或缺少含分红指数')
             finance = known.get(symbol)
             if financials and finance is None:
                 raise ValueError(f'{symbol} 在 {cutoff} 无已知财务因子')
-            output.append({'date': cutoff, 'symbol': symbol, 'total_return_index': row['total_return_index'],
+            output.append({'date': cutoff, 'symbol': symbol, level_key: row[level_key],
                            'quality': finance['quality'] if finance else '',
                            'value': finance['value'] if finance else '',
                            'available_at': finance['available_at'] if finance else cutoff})
-    raw = csv_text('monthly', output)
-    parse_panel(raw, required_fields=())
-    result = _prepare_snapshot(store, kind='monthly', raw_csv=raw,
+    raw = csv_text(kind, output)
+    parse_panel(raw, required_fields=(), return_basis=return_basis)
+    result = _prepare_snapshot(store, kind=kind, raw_csv=raw,
                              source='日线转月度；取各月最后观测日；舍弃最后日历月；来源：' + daily['source'][:200],
-                             price_basis='total_return_index', is_demo=daily['is_demo'])
+                             price_basis='unadjusted' if return_basis == 'price' else 'total_return_index', is_demo=daily['is_demo'])
     # Derived lineage is an additional immutable object; do not mutate the imported snapshot.
     body = {key: value for key, value in result.items() if key not in ('id', 'created_at')}
     body['derived_from'] = {'daily': daily_id, 'financials': financials_id, 'universe': universe_id}
+    body['warnings'] = list(dict.fromkeys(body['warnings'] + daily['warnings'] +
+                                         (financials['warnings'] if financials else [])))
     return store.put('snapshot', body)

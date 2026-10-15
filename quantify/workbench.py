@@ -12,7 +12,7 @@ from .storage import ResearchStore
 
 def engine_fingerprint():
     root = Path(__file__).parent
-    names = ('research.py', 'factors.py', 'core.py', 'datasets.py', 'workbench.py')
+    names = ('research.py', 'factors.py', 'core.py', 'datasets.py', 'workbench.py', 'expressions.py')
     hashed = hashlib.sha256()
     for name in names:
         hashed.update(name.encode())
@@ -25,7 +25,7 @@ class Workbench:
         self.store = ResearchStore(directory)
         factors.initialize_factors(self.store)
 
-    def run(self, *, snapshot_id, factor_ids, horizon=3, top_k=2, cost_bps=20, holdout_months=12):
+    def run(self, *, snapshot_id, factor_ids, horizon=3, top_k=2, cost_bps=20, holdout_months=12, _experiment_id=None):
         # Persist failures after accepting a valid request shape, so unsuccessful research is not lost.
         request = dict(snapshot_id=snapshot_id, factor_ids=factor_ids, horizon=horizon,
                        top_k=top_k, cost_bps=cost_bps, holdout_months=holdout_months)
@@ -40,34 +40,37 @@ class Workbench:
             cost_bps = number(cost_bps, '往返成本', 0, 1000)
             holdout_months = integer(holdout_months, '封存月数', 12, 60)
             snapshot = self.store.get('snapshot', snapshot_id)
-            if snapshot['kind'] != 'monthly':
-                raise ValueError('实验需要月度含分红指数快照；日线请先生成月度快照')
+            if snapshot['kind'] not in ('monthly', 'monthly_price'):
+                raise ValueError('实验需要月度研究快照；日线请先生成对应收益口径的月度快照')
+            return_basis = 'price' if snapshot['kind'] == 'monthly_price' else 'total_return'
             specs = [self.store.get('factor', item) for item in factor_ids]
-            raw = datasets.csv_text('monthly', snapshot['rows'])
-            dates, _ = parse_panel(raw, required_fields=factors.required_fields(specs))
+            raw = datasets.csv_text(snapshot['kind'], snapshot['rows'])
+            dates, _ = parse_panel(raw, required_fields=factors.required_fields(specs), return_basis=return_basis)
             minimum = 68 + 2 * horizon + holdout_months
             if len(dates) < minimum:
                 raise ValueError(f'共同预热、训练、持有及封存至少需要 {minimum} 个月数据，建议更长历史')
             cutoff = dates[-holdout_months].isoformat()
             # Evaluator sees only development rows, including its realized labels.
             development = [row for row in snapshot['rows'] if row['date'] < cutoff]
-            development_csv = datasets.csv_text('monthly', development)
+            development_csv = datasets.csv_text(snapshot['kind'], development)
             report = evaluate(development_csv, horizon=horizon, top_k=top_k, cost_bps=cost_bps,
-                              source=snapshot['source'], factor_specs=specs, warmup_months=30)
+                              source=snapshot['source'], factor_specs=specs, warmup_months=30, return_basis=return_basis)
             report['is_demo'] = snapshot['is_demo']
             report['status'] = ('合成数据，仅验证流程' if snapshot['is_demo'] else
                                 '导入数据的探索性验证；来源声明未经外部核验')
-            report['factor_definitions'] = {spec['id']: f"{spec['name']} / {spec['kind']} / 窗口 {spec['lookback']} / 跳过 {spec['skip']}"
+            if return_basis == 'price':
+                report['status'] += '；未复权价格收益，不含现金分红，公司行动跳变未调整'
+            report['factor_definitions'] = {spec['id']: (spec['expression'] if spec['kind'] == 'expression' else f"{spec['name']} / {spec['kind']} / 窗口 {spec['lookback']} / 跳过 {spec['skip']}")
                                             for spec in specs}
             report['snapshot_id'] = snapshot_id
             report['snapshot_warnings'] = snapshot['warnings']
             protocol = {'deterministic': True, 'random_seed': None, 'warmup_months': 30, 'holdout_months': holdout_months, 'holdout_start': cutoff,
-                        'holdout_evaluated': False, 'development_end': development[-1]['date'],
+                        'holdout_evaluated': False, 'return_basis': return_basis, 'development_end': development[-1]['date'],
                         'note': '末尾月份封存且不参与本次计算；开发窗可反复比较，不代表独立最终验收。'}
             body = {'status': 'completed', 'request': request, 'engine': engine, 'protocol': protocol, 'report': report}
         except (ValueError, TypeError, KeyError) as exc:
             body = {'status': 'failed', 'request': request, 'engine': engine, 'error': str(exc)}
-        return self.store.put('experiment', body, uuid.uuid4().hex)
+        return self.store.put('experiment', body, _experiment_id or uuid.uuid4().hex)
 
     def compare(self, *, left_id, right_id):
         left = self.store.get('experiment', left_id)

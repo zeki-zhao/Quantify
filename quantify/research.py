@@ -8,9 +8,10 @@ from datetime import date
 from statistics import mean
 
 from .core import integer, number
-from .factors import BUILTINS, calculate, history_length, required_fields as factor_fields, validate_spec
+from .factors import BUILTINS, calculate, history_length, required_fields as factor_fields, validate_spec, series_level
 
 FIELDS = ["date", "symbol", "total_return_index", "quality", "value", "available_at"]
+PRICE_FIELDS = ["date", "symbol", "close", "quality", "value", "available_at"]
 CANDIDATES = tuple(spec["id"] for spec in BUILTINS)
 
 
@@ -31,12 +32,16 @@ def demo_csv():
     return buf.getvalue()
 
 
-def _parse_panel(text, required_fields=("quality", "value")):
+def _parse_panel(text, required_fields=("quality", "value"), return_basis='total_return'):
+    if return_basis not in ('price', 'total_return'):
+        raise ValueError('收益口径必须为 price 或 total_return')
+    level_key = 'close' if return_basis == 'price' else 'total_return_index'
+    fields = PRICE_FIELDS if return_basis == 'price' else FIELDS
     if not isinstance(text, str) or len(text.encode("utf-8")) > 1_500_000:
         raise ValueError("CSV 必须为 UTF-8 文本，且不超过 1.5 MB")
     reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")), strict=True)
-    if reader.fieldnames != FIELDS:
-        raise ValueError("CSV 表头及顺序必须为：" + ",".join(FIELDS))
+    if reader.fieldnames != fields:
+        raise ValueError("CSV 表头及顺序必须为：" + ",".join(fields))
     grouped = {}
     for row in reader:
         if len(grouped) > 600:
@@ -45,15 +50,15 @@ def _parse_panel(text, required_fields=("quality", "value")):
             stamp = date.fromisoformat(row["date"])
             available = date.fromisoformat(row["available_at"])
             symbol = row["symbol"].strip()
-            values = {key: (None if row[key] == "" and key != "total_return_index" else float(row[key]))
-                      for key in ("total_return_index", "quality", "value")}
+            values = {key: (None if row[key] == "" and key != level_key else float(row[key]))
+                      for key in (level_key, "quality", "value")}
         except (ValueError, TypeError, AttributeError):
             raise ValueError("CSV 日期或数值无效") from None
         if not symbol or len(symbol) > 40 or available > stamp:
             raise ValueError("代码无效或因子可用日期晚于观察日期（未来数据）")
         if None in row or any(value is None for value in row.values()):
             raise ValueError("CSV 列数不一致")
-        number(values["total_return_index"], "含分红指数", .000001, 1e12)
+        number(values[level_key], "价格" if return_basis == "price" else "含分红指数", .000001, 1e12)
         for key in ("quality", "value"):
             if values[key] is None:
                 if key in required_fields:
@@ -78,9 +83,9 @@ def _parse_panel(text, required_fields=("quality", "value")):
     return dates, [grouped[d] for d in dates]
 
 
-def parse_panel(text, required_fields=("quality", "value")):
+def parse_panel(text, required_fields=("quality", "value"), return_basis='total_return'):
     try:
-        return _parse_panel(text, required_fields)
+        return _parse_panel(text, required_fields, return_basis)
     except csv.Error:
         raise ValueError("CSV 格式无效或单个字段过长") from None
 
@@ -96,7 +101,7 @@ def statistics(returns):
             "worst_return": min(returns), "note": "样本为股票×入场月；横截面相关，不是独立试验，不提供伪精确置信区间"}
 
 
-def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合成研究面板 v1", factor_specs=None, warmup_months=None):
+def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合成研究面板 v1", factor_specs=None, warmup_months=None, return_basis='total_return'):
     horizon = integer(horizon, "研究持有月数", 3, 12)
     if horizon not in (3, 6, 12):
         raise ValueError("持有月数必须为 3、6 或 12")
@@ -116,7 +121,7 @@ def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合�
         raise ValueError("因子版本不能重复")
     lookback = max(6, history_length(specs))
     warmup = lookback if warmup_months is None else integer(warmup_months, "共同预热月数", lookback, 60)
-    dates, panel = parse_panel(input_csv, required_fields=factor_fields(specs))
+    dates, panel = parse_panel(input_csv, required_fields=factor_fields(specs), return_basis=return_basis)
     if top_k >= len(panel[0]):
         raise ValueError("筛选数量必须小于股票池数量")
     factor_scores = {i: calculate(panel, i, specs) for i in range(lookback, len(panel))}
@@ -128,8 +133,8 @@ def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合�
         if factor:
             symbols.sort(key=lambda symbol: (-factor_scores[index][symbol][factor], symbol))
             symbols = symbols[:top_k]
-        return [panel[index + 1 + horizon][s]["total_return_index"] /
-                panel[index + 1][s]["total_return_index"] - 1 - cost for s in symbols]
+        return [series_level(panel[index + 1 + horizon][s]) /
+                series_level(panel[index + 1][s]) - 1 - cost for s in symbols]
 
     folds, selected_returns, baseline_returns = [], [], []
     # 36-month rolling fit, 12-month forward test; training labels mature BEFORE test signal.
@@ -156,7 +161,7 @@ def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合�
     if not folds:
         raise ValueError("数据不足以形成完整的训练及样本外持有窗口")
     selected, baseline = statistics(selected_returns), statistics(baseline_returns)
-    return {"is_demo": is_demo, "source": "人工合成研究面板 v1（与公司财报演示数据独立）" if is_demo else source,
+    report = {"is_demo": is_demo, "source": "人工合成研究面板 v1（与公司财报演示数据独立）" if is_demo else source,
             "status": "流程验证，不能证明真实胜率提升" if is_demo else "探索性滚动样本外统计；未经独立验证或概率校准",
             "parameters": {"horizon_months": horizon, "top_k": top_k, "round_trip_cost_bps": cost_bps,
                            "training_window_months": 36, "test_block_months": 12, "warmup_months": warmup},
@@ -174,3 +179,11 @@ def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合�
             "limitations": "训练期持有区间有重叠；测试股票间相关；候选规则选择仍有选择偏差。平衡股票池可能引入幸存者偏差；CSV可用日期由用户声明，未验证公告；未模拟真实成交、停牌、涨跌停、组合资金与税费。不是组合净值回测，不承诺提升。需独立留出集及更长多市场数据。",
             "selected": selected, "baseline": baseline,
             "positive_rate_difference": selected["positive_rate"] - baseline["positive_rate"], "folds": folds}
+
+    if return_basis == 'price':
+        report['dataset']['price_basis'] = '未复权价格收益；不含现金分红；拆股、送转和配股等除权跳变未调整'
+        report['dataset']['units'] = {'close': 'CNY/share; unadjusted', 'quality': 'dimensionless', 'value': 'dimensionless'}
+        report['factor_definitions']['momentum'] = '过去6个月未复权收盘价格涨幅；不含分红'
+        report['method'] = report['method'].replace('含分红指数收益', '未复权价格收益（不含现金分红，公司行动跳变未调整）')
+    report['return_basis'] = return_basis
+    return report
