@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .storage import ResearchStore, canonical
+from .model_calls import ModelCalls
 
 ACTIVE = ('queued', 'running')
 TERMINAL = ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
@@ -38,6 +39,7 @@ class JobStore(ResearchStore):
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL,
                 created_at TEXT NOT NULL, event TEXT NOT NULL, body TEXT NOT NULL)''')
             db.execute('CREATE INDEX IF NOT EXISTS job_event_index ON job_events(job_id, sequence)')
+        self.model_calls = ModelCalls(self)
 
     def job(self, job_id):
         if not isinstance(job_id, str):
@@ -80,7 +82,7 @@ class JobStore(ResearchStore):
             raise LostLease('任务已经停止或执行所有者已改变')
 
     def create(self, kind, payload, timeout_seconds, progress=None, status='queued', retry_of=None):
-        if kind not in ('experiment', 'research', 'history') or status not in ('queued', 'waiting_input'):
+        if kind not in ('experiment', 'research', 'history', 'portfolio') or status not in ('queued', 'waiting_input'):
             raise ValueError('任务类型或初始状态无效')
         if type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 3600:
             raise ValueError('任务运行时限需大于零且最多 3600 秒')
@@ -122,6 +124,7 @@ class JobStore(ResearchStore):
             self._lease(db, job_id, owner)
             stop = db.execute('SELECT stop_requested FROM jobs WHERE id=?', (job_id,)).fetchone()[0]
             status = stop or status
+            self.model_calls.interrupt(db, job_id)
             db.execute('UPDATE jobs SET status=?,result=?,error=?,stop_requested=NULL,updated_at=? WHERE id=?',
                        (status, canonical(result) if result is not None else None, error, now(), job_id))
             self._event(db, job_id, status, {'error': error})
@@ -147,7 +150,7 @@ class JobStore(ResearchStore):
                 if state != 'paused' or elapsed >= limit:
                     raise ValueError('只能继续尚有运行时间预算的暂停任务')
                 payload, progress = json.loads(payload), json.loads(progress)
-                state = ('queued' if progress.get('pending') or progress.get('cursor', 0) < len(payload.get('proposals', [])) else 'waiting_input')
+                state = ('queued' if payload.get('provider', 'manual') != 'manual' or progress.get('pending') or progress.get('cursor', 0) < len(payload.get('proposals', [])) else 'waiting_input')
                 db.execute('UPDATE jobs SET status=?,stop_requested=NULL,updated_at=? WHERE id=?', (state, now(), job_id))
             else:
                 if action == 'pause' and kind != 'research':
@@ -169,6 +172,8 @@ class JobStore(ResearchStore):
             if row is None or row[0] != 'research' or row[1] not in ('waiting_input', 'paused'):
                 raise ValueError('仅等待提案或暂停的研究任务可以追加提案')
             payload, progress = json.loads(row[2]), json.loads(row[3])
+            if payload.get('provider', 'manual') != 'manual':
+                raise ValueError('API会话由固定提供方生成提案，不能导入手动提案')
             if len(payload['proposals']) + len(proposals) > payload['max_rounds']:
                 raise ValueError('提案总数超过本任务轮次预算')
             payload['proposals'].extend(proposals)
@@ -182,6 +187,7 @@ class JobStore(ResearchStore):
             db.execute('BEGIN IMMEDIATE')
             ids = db.execute("SELECT id FROM jobs WHERE status IN ('queued','running')").fetchall()
             for (job_id,) in ids:
+                self.model_calls.interrupt(db, job_id)
                 db.execute("UPDATE jobs SET status='interrupted',stop_requested=NULL,error=?,updated_at=? WHERE id=?",
                            ('服务重启；未自动重跑，可显式创建重试任务', now(), job_id))
                 self._event(db, job_id, 'interrupted', {'reason': 'restart'})

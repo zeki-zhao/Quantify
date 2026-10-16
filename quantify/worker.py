@@ -1,8 +1,12 @@
-"""Queue worker entry point. No arbitrary code or remote model calls are executed."""
+"""Queue worker entry point; model APIs return only constrained proposals."""
 import sys
 from contextlib import closing
 from .market import MarketStore, download_history
 from .datasets import snapshot_summary
+from .objectives import assess
+from .model_calls import APIProposalProvider
+from .model_api import ModelError
+from .portfolio_service import PortfolioService
 
 from .jobs import JobStore, LostLease
 from .proposals import ManualProposalProvider
@@ -29,7 +33,9 @@ def run_research(store, job, owner):
 
     tools = ResearchTools(store.directory, config['baseline_id'], progress, record, job_id)
     context = tools.call('get_research_context')
-    provider = ManualProposalProvider(config['proposals'][progress['cursor']:])
+    is_api = config.get('provider', 'manual') != 'manual'
+    provider = (APIProposalProvider(store, job_id, owner, config['api'], config['goal']) if is_api else
+                ManualProposalProvider(config['proposals'][progress['cursor']:]))
     baseline = tools.baseline['report']['selected']
 
     def conclude(reason):
@@ -46,7 +52,15 @@ def run_research(store, job, owner):
                 conclude('budget_exhausted'); return
             if progress['no_improvement'] >= config['patience']:
                 conclude('no_improvement'); return
-            proposal = provider.propose(context, progress['outcomes'])
+            if is_api:
+                context = tools.call('get_research_context')
+            try:
+                proposal = provider.propose(context, progress['outcomes'])
+            except ModelError as exc:
+                if exc.category in ('budget', 'retry_budget'):
+                    conclude('api_budget_exhausted'); return
+                raise
+            check_stop()
             if proposal is None:
                 store.finish(job_id, owner, 'waiting_input', result={'reason': 'awaiting_manual_proposal'})
                 return
@@ -55,7 +69,7 @@ def run_research(store, job, owner):
             progress['pending'] = {'proposal': proposal, 'round': progress['rounds'], 'stage': 'new',
                                    'experiment_id': f"{job_id}-round-{progress['rounds']}"}
             checkpoint()
-            record('proposal', {'round': progress['rounds'], 'provider': 'manual', 'proposal': proposal})
+            record('proposal', {'round': progress['rounds'], 'provider': config.get('provider', 'manual'), 'proposal': proposal})
         pending = progress['pending']
         proposal = pending['proposal']
         if proposal['action'] == 'stop':
@@ -84,10 +98,16 @@ def run_research(store, job, owner):
             else:
                 comparison = tools.call('compare_runs', left_id=progress['best_id'], right_id=result['id'])
                 delta = comparison['difference_right_minus_left']
-                improved = (delta['mean_return'] > config['min_mean_improvement'] + 1e-12 and
-                            result['selected']['worst_return'] >= baseline['worst_return'] - config['max_tail_deterioration'] and
-                            delta['observations'] == 0)
-                outcome.update(status='improved' if improved else 'not_improved', selected=result['selected'], comparison=comparison)
+                incumbent = tools.call('get_experiment_result', experiment_id=progress['best_id'])['selected']
+                decision = assess(result['selected'], incumbent, config['objective'])
+                anchor = assess(result['selected'], baseline, config['objective'])
+                extra = ((config['min_mean_improvement'] is None or delta['mean_return'] + 1e-12 >= config['min_mean_improvement']) and
+                         (config['max_tail_deterioration'] is None or result['selected']['worst_return'] + 1e-12 >= baseline['worst_return'] - config['max_tail_deterioration']))
+                same_samples = delta['observations'] == 0
+                improved = decision['accepted'] and anchor['accepted'] and extra and same_samples
+                outcome.update(status='improved' if improved else 'not_improved', selected=result['selected'],
+                               comparison=comparison, decision=decision, baseline_decision=anchor,
+                               additional_constraints_passed=extra, same_sample_count=same_samples)
                 if improved:
                     progress['best_id'] = result['id']
                     progress['no_improvement'] = 0
@@ -112,6 +132,17 @@ def execute(directory, job_id, owner):
     try:
         if job['kind'] == 'research':
             run_research(store, job, owner)
+        elif job['kind'] == 'portfolio':
+            if job['payload']['engine'] != engine_fingerprint():
+                raise ValueError('组合排队后引擎改变，请重新提交')
+            def checkpoint(progress):
+                current = store.job(job_id)
+                if current['stop_requested']:
+                    raise StopRequested()
+                store.checkpoint(job_id, owner, progress)
+            result = PortfolioService(Workbench(directory)).run(spec_id=job['payload']['spec_id'], run_id=job_id+'-portfolio', checkpoint=checkpoint)
+            store.finish(job_id, owner, 'succeeded' if result['status']=='completed' else 'failed',
+                         result={'portfolio_run_id':result['id']}, error=result.get('error'))
         elif job['kind'] == 'history':
             market = MarketStore(directory)
             def checkpoint(progress):

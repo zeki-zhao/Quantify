@@ -239,6 +239,8 @@ class LabTests(unittest.TestCase):
         self.assertEqual(retried['progress']['rounds'], 0)
 
     def test_improvement_threshold_and_tail_guard_produce_only_suggestion(self):
+        self.request['objective'] = {'primary': 'mean_return'}
+        self.baseline = self.workbench.run(**self.request)
         session = self.session(max_rounds=1)
         result = self.submit(session, proposal('-volatility(6,0)'))
         self.assertEqual(result['progress']['outcomes'][0]['status'], 'improved')

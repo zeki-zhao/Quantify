@@ -6,12 +6,13 @@ const pct = value => `${(value * 100).toFixed(2)}%`;
 const table = (heads, rows) => `<table><thead><tr>${heads.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(cell=>`<td>${esc(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
 let snapshots = [], factors = [], runs = [], currentData = null, currentRun = null;
 let busy = false;
-const kindNames = {daily:'日线',monthly:'月度总回报',monthly_price:'月度价格收益',financials:'财务',universe:'股票池'};
+const kindNames = {daily:'日线',execution:'执行状态',monthly:'月度总回报',monthly_price:'月度价格收益',financials:'财务',universe:'股票池'};
 const help = {
   daily:'date,symbol,open,high,low,close,volume,total_return_index,available_at。价格单位元/股，成交量为股；total_return_index 可留空，留空时不能生成总回报研究。日期为 YYYY-MM-DD，日线可用时间按当日收盘之后解释。',
   monthly:'date,symbol,total_return_index,quality,value,available_at。含分红指数必填；财务列可留空，但只能用于动量/低波动。完整研究需要连续月度和固定股票池，封存 12 个月时，3/6/12 月持有期分别至少需要 86/92/104 个月。',
   monthly_price:'date,symbol,close,quality,value,available_at。仅未复权价格；收益不含现金分红，拆股/送转/配股跳变未调整。财务列可留空；未提供时只能选价格类因子。',
   financials:'period_end,symbol,quality,value,available_at。质量与价值是由你计算并声明口径的因子，数值越大越好；修订使用新的实际披露日期。由于只有日期，财务数据在披露日之后才用于收盘信号。',
+  execution:'date,symbol,suspended,limit_up,limit_down,no_price_limit,available_at。suspended/no_price_limit 为0或1；限价为元。无价格限制须显式声明并留空上下限，否则上下限必填。available_at 表示该日开盘前已知（由导入者声明）。',
   universe:'date,symbol,member,available_at。date 为生效日期，member=1 加入、0 退出；必须包含初始股票池成员。历史事件可保存和查询，动态池研究尚不支持。'
 };
 async function api(path, payload) {
@@ -105,7 +106,7 @@ function showRun(run) {
   $('result-note').textContent=`${report.status}。封存起点 ${run.protocol.holdout_start}，未计算封存期收益。${run.protocol.note}`;
   $('result-metrics').innerHTML=table(['分组','上涨比例','平均单笔净收益','最差单笔净收益','样本数'],[['因子筛选',report.selected],['同期基准',report.baseline]].map(([name,s])=>[name,pct(s.positive_rate),pct(s.mean_return),pct(s.worst_return),s.observations]));
   const names=Object.fromEntries(report.factor_versions.map(f=>[f.id,f.name]));
-  $('result-folds').innerHTML=table(['测试信号','最后退出','所选因子','平均单笔收益'],report.folds.map(f=>[f.test_signal_start,f.test_last_exit,names[f.chosen_factor],pct(f.selected.mean_return)]));
+  $('result-folds').innerHTML=table(['测试信号','最后退出','所选因子','平均单笔收益'],report.folds.map(f=>[f.test_signal_start,f.test_last_exit,names[f.chosen_factor]||'全池',pct(f.selected.mean_return)]));
 }
 $('kind').onchange=()=>{
   const kind=$('kind').value;
@@ -135,7 +136,7 @@ $('factor-form').onsubmit=event=>{event.preventDefault();action(async()=>{
 $('run-form').onsubmit=event=>{event.preventDefault();action(async()=>{
   const factor_ids=[...document.querySelectorAll('#factor-options input:checked')].map(input=>input.value);
   if(!factor_ids.length||factor_ids.length>10)throw new Error('请选择 1 至 10 个因子版本');
-  const run=await queuedExperiment({request:{snapshot_id:$('run-snapshot').value,factor_ids,horizon:Number($('horizon').value),top_k:Number($('top-k').value),cost_bps:Number($('cost').value),holdout_months:Number($('holdout').value)}});
+  const run=await queuedExperiment({request:{snapshot_id:$('run-snapshot').value,factor_ids,horizon:Number($('horizon').value),top_k:Number($('top-k').value),cost_bps:Number($('cost').value),holdout_months:Number($('holdout').value),objective:{primary:$('objective').value,min_improvement:Number($('objective-min').value)/100,max_mean_deterioration:Number($('objective-mean').value)/100,max_tail_deterioration:Number($('objective-tail').value)/100,min_observations:Number($('objective-samples').value)}}});
   await refresh();showRun(run);if(run.status==='failed')throw new Error('实验失败并已保存：'+run.error);
 });};
 $('compare-form').onsubmit=event=>{event.preventDefault();action(async()=>{

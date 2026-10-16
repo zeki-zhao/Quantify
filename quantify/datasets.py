@@ -14,6 +14,7 @@ SCHEMAS = {
     'monthly_price': PRICE_FIELDS,
     'financials': ['period_end', 'symbol', 'quality', 'value', 'available_at'],
     'universe': ['date', 'symbol', 'member', 'available_at'],
+    'execution': ['date', 'symbol', 'suspended', 'limit_up', 'limit_down', 'no_price_limit', 'available_at'],
 }
 BASES = ('unadjusted', 'forward_adjusted', 'backward_adjusted', 'total_return_index', 'not_applicable')
 MAX_BYTES = 8_000_000
@@ -95,6 +96,20 @@ def _parse_rows(kind, raw):
                 row['total_return_index'] = numeric(row['total_return_index'], '含分红指数', .000001)
             elif kind == 'monthly_price':
                 row['close'] = numeric(row['close'], '未复权价格', .000001)
+        elif kind == 'execution':
+            if available > event:
+                raise ValueError('执行状态须声明为交易日开盘前已知，available_at不能晚于date')
+            for field in ('suspended', 'no_price_limit'):
+                if row[field] not in ('0', '1'):
+                    raise ValueError(field + '必须为0或1')
+                row[field] = int(row[field])
+            for field in ('limit_up', 'limit_down'):
+                row[field] = numeric(row[field], field, .000001, optional=True)
+            if row['no_price_limit']:
+                if row['limit_up'] is not None or row['limit_down'] is not None:
+                    raise ValueError('明确无价格限制日应留空上下限')
+            elif row['limit_up'] is None or row['limit_down'] is None or row['limit_up'] < row['limit_down']:
+                raise ValueError('限价日必须提供有效上下限；缺失不能当作无限价')
         else:
             if row['member'] not in ('0', '1'):
                 raise ValueError('member 必须为 0（退出）或 1（加入）')
@@ -140,8 +155,8 @@ def _prepare_snapshot(store, *, kind, raw_csv, source, price_basis, is_demo, par
         raise ValueError('月度研究必须使用含分红再投资指数')
     if kind == 'monthly_price' and price_basis != 'unadjusted':
         raise ValueError('价格研究当前仅支持明确未复权的价格，不能混用复权与总回报')
-    if kind in ('financials', 'universe') and price_basis != 'not_applicable':
-        raise ValueError('财务和股票池的价格口径应为 not_applicable')
+    if kind in ('financials', 'universe', 'execution') and price_basis != 'not_applicable':
+        raise ValueError('财务、股票池和执行状态的价格口径应为 not_applicable')
     if kind == 'daily' and price_basis == 'not_applicable':
         raise ValueError('日线必须声明 OHLC 价格口径')
     rows, warnings = CSVDataAdapter().read(kind, raw_csv)
@@ -180,6 +195,8 @@ def _prepare_snapshot(store, *, kind, raw_csv, source, price_basis, is_demo, par
         warnings.append('未复权价格收益不含现金分红，拆股/送转/配股等跳变未调整；不代表投资总回报。')
     if kind in ('financials', 'universe'):
         warnings.append('available_at 为用户声明的历史可用时间，未向公告源核验。')
+    if kind == 'execution':
+        warnings.append('停牌和价格上下限为用户声明的开盘前状态；没有核验交易日历、板块或公司行动。')
     if replaced:
         warnings.append(f'本次修订 {replaced} 条历史记录，原版本仍可读取。')
     body = {**metadata, 'schema_version': 1, 'parent_id': parent_id,

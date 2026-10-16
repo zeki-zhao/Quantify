@@ -10,8 +10,13 @@
 | 001 | 2026-10-14 | 第一阶段 CSV 研究基础设施 | P1.1–P1.4 | 完成（本轮范围） | [001-research-foundation](001-research-foundation/README.md) |
 | 002 | 2026-10-14 | 任务队列与 AI 因子研究 | P2.1–P2.2 | 完成（手动协作范围） | [002-ai-research](002-ai-research/README.md) |
 | 003 | 2026-10-15 | 在线行情与价格收益研究 | P1 在线补充 / P3.3 前置 | 阻塞（真实联网验收） | [003-online-data](003-online-data/README.md) |
+| 004 | 2026-10-15 | 方案执行与自我迭代审计 | P1–P3 审计 / A1–A6 | 完成（审计；发现项待修复） | [004-plan-audit](004-plan-audit/README.md) |
+| 005 | 2026-10-15 | 目标统一、最终验证与研究版本生命周期 | A1/A2、A3/A5/A6 基础 | 完成（研究范围） | [005-validation-lifecycle](005-validation-lifecycle/README.md) |
+| 006 | 2026-10-15 | PlantUML 概要设计与架构文档 | P0 文档 / 当前实现架构固化 | 完成 | [006-outline-design](006-outline-design/README.md) |
+| 007 | 2026-10-16 | OpenAI / DeepSeek API 因子迭代 | P2.3 模型API | 完成（软件/离线；真实API待验收） | [007-model-api](007-model-api/README.md) |
+| 008 | 2026-10-16 | 组合账本与开发期回放 | P3.1 / A5 基础 | 完成（基础/离线范围） | [008-portfolio-ledger](008-portfolio-ledger/README.md) |
 
-最近完成：`002`，按用户选择完成 P2 手动协作；P1.2 未完成事项仍保留。`003` 的代码与离线验收完成，真实联网验收待解除代理阻断后继续；下一个可用编号：`004`。
+最近功能迭代007补OpenAI/DeepSeek API软件与调用预算，真实模型联测待Key/网络；005的冻结验证/人工版本/手动前向基础保留。006建立概要设计，007同步更新为16幅图。003真实行情验收按用户决定等待本地环境；008补开发期组合账本，组合最终验收/启用、诊断和自动月度串联待做。008完成组合基础，概要设计已扩展至18幅图。下一个可用编号：`009`。
 
 ## 记录规则
 

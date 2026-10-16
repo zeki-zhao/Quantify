@@ -54,7 +54,7 @@ class ResearchTools:
         if experiment_id not in self.progress['experiment_ids']:
             raise ValueError('实验不属于当前研究任务')
         experiment = self.store.get('experiment', experiment_id)
-        for key in ('snapshot_id', 'horizon', 'top_k', 'cost_bps', 'holdout_months'):
+        for key in ('snapshot_id', 'horizon', 'top_k', 'cost_bps', 'holdout_months', 'objective'):
             if experiment['request'][key] != self.baseline['request'][key]:
                 raise ValueError('实验超出固定研究协议')
         if experiment['engine'] != self.baseline['engine']:
@@ -71,10 +71,11 @@ class ResearchTools:
                      'available_fields': ['close' if report.get('return_basis') == 'price' else 'total_return_index'] +
                         [key for key in ('quality', 'value') if all(row[key] is not None for month in panel for row in month.values())]},
             'factors': self._list_factors(), 'formula_language': GRAMMAR, 'proposal_schema': PROPOSAL_SCHEMA,
-            'objective': '在相同数据/时段/成本下提高平均单笔净收益，同时遵守相对原基线的最差单笔收益约束；不是组合回测。',
+            'objective': self.baseline['request']['objective'],
+            'selection_note': '相同目标同时用于训练和候选准入；无合格替代者时保留候选列表首个基线。不是组合回测。',
             'limitations': ['只发送开发窗指标，不发送原始行情或留出期收益。',
                             '固定股票池可能有幸存者偏差，多轮候选比较不等于独立最终验证。',
-                            '手动提案由用户粘贴；本程序未调用 ChatGPT 或任何远程模型。'],
+                            '提案来自手动输入或固定模型API；效果仅由本地引擎检验，模型不能启用版本。'],
         }
 
     def _list_factors(self):
@@ -94,7 +95,7 @@ class ResearchTools:
 
     def _create_factor_candidate(self, *, name, expression, rationale):
         self._validate_factor(expression)
-        parent_id = self.baseline['request']['factor_ids'][0]
+        parent_id = self._scoped_experiment(self.progress['best_id'])['request']['factor_ids'][0]
         candidate = factors.create_version(self.store, parent_id=parent_id, name=name,
                                            reason=rationale, expression=expression)
         if candidate['id'] not in self.progress['factor_ids']:

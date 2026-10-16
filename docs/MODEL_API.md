@@ -1,0 +1,101 @@
+# OpenAI（ChatGPT）与 DeepSeek API
+
+迭代 007 增加两家提供方的自动提案研究。应用仍为 Python 标准库，无需安装模型 SDK；原有手动粘贴流程保留。**双路协议及离线流程已验收，真实账户调用尚未验收**：本次环境没有两家 API Key，访问官方文档站点也被云代理拒绝；不能把合成响应测试当作真实服务接通。
+
+## 1. 提供方与凭据
+
+| 选择 | 协议与固定地址 | 环境变量 | 初始示例模型 |
+| --- | --- | --- | --- |
+| OpenAI（ChatGPT API） | Responses：`https://api.openai.com/v1/responses` | `OPENAI_API_KEY` | `gpt-4.1-mini` |
+| DeepSeek API | Chat Completions：`https://api.deepseek.com/chat/completions` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+
+ChatGPT网页订阅不等于OpenAI API账户额度。模型名称可以在研究室修改，以账户当前可用且支持对应协议/JSON输出的模型为准；示例名称和用户填写的单价不代表已查询供应商实时模型清单或价格。
+
+密钥从启动进程的环境读取，不在网页中输入、保存或导出。页面只展示变量名称和是否存在；设置或更新后重启应用，子进程继承环境。不要把密钥发到聊天或提交 Git。
+
+例如，在自己的 PowerShell 会话中设置后启动（替换下方占位文本）：
+
+```powershell
+$env:OPENAI_API_KEY = "你的OpenAI API密钥"
+$env:DEEPSEEK_API_KEY = "你的DeepSeek API密钥"
+python app.py
+```
+
+Bash 可先在当前终端设置这两个环境变量，再运行 `python app.py`。只使用一家时仅配置对应变量。地址固定为官方 HTTPS 端点，校验 TLS，不跟随重定向；使用标准库的 `HTTP_PROXY` / `HTTPS_PROXY` 环境设置，不将代理值存入数据库或错误日志。
+
+## 2. 页面操作
+
+1. 在研究工作台用现有 CSV 或合成数据运行当前引擎基线。真实行情接入不作为 API 开发或流程试用的前提。
+2. 打开“AI研究室”，在“模型API配置”选择提供方，填写模型、预算币种和输入/输出每百万token单价。按供应商当前价格填写；保存不会发送模型请求。
+3. 创建研究任务时选择手动、OpenAI或DeepSeek。API会话固定使用一家，不在失败后自动切换提供方。
+4. 设置原有轮次、候选数、patience和运行时限，以及 API 请求次数、总token、单次输出token、估算费用、请求超时和HTTP临时错误重试预算。
+5. API会话直接进入队列：模型给出一个提案 → 本地公式校验 → 实验 → 原政策判优 → 将开发反馈发送给同一模型，直到预算、无改进、stop或错误停止。
+6. 任务详情展示逐轮结果、调用/用量/费用估算及未知调用数；完整JSON包含请求正文、正文摘要、调用状态、用量和反馈，不包含Authorization头或密钥。
+
+模型只生成与手动相同的四字段JSON对象，不能运行任意Python、读取最终收益或调用启用接口。所有结果仍是研究建议，最终验证和人工更替规则不变。
+
+创建时将模型、币种、单价和API预算冻结到任务。之后修改全局模型设置不会改变已创建会话。研究执行/模型模块纳入引擎摘要，旧基线需要重跑；不跨版本冒充复现。
+
+## 3. 发送内容与协议
+
+每轮重新构造开发窗上下文，包括目标、结构化政策、固定基线的统计/测试窗摘要、可用字段、因子定义、公式规范和已有轮次反馈。没有原始行情行、原始CSV、最终验收结果、API Key或任意工具权限。
+
+OpenAI使用 `store=false`、`max_output_tokens` 与严格JSON Schema；从Responses的message/output_text读取结果。DeepSeek使用messages、`response_format=json_object`、`max_tokens`、非流式请求；从唯一choice的message读取结果。对拒答、输出截断、非法JSON、多个提案或额外字段，记录失败并停止；合法JSON中的非法公式则计为拒绝的一轮，可在现有预算内继续研究。
+
+目前不提供应用内聊天、流式token展示、模型直接工具调用、第三方网关、自定义base URL、模型自动切换或自动启用。一个会话使用固定模型；两家都可配置并分别创建会话。
+
+## 4. API预算与记账
+
+| 参数 | 默认 / 范围 | 用途 |
+| --- | --- | --- |
+| `max_calls` | 5 / 1–30 | 每次HTTP尝试都消耗一次，含重试 |
+| `max_total_tokens` | 100000 / 512–1000000 | 已结算用量加未知调用预留，再加新请求预留，不能超过预算 |
+| `max_output_tokens` | 2048 / 256–8192 | 每次请求的输出上限；具体模型兼容性以实际服务为准 |
+| `max_cost` | 1 / 0.000001–1000 | 与冻结单价同币种的本地估算上限 |
+| `request_timeout_seconds` | 30 / 1–120 | HTTP I/O超时；整个工作进程另受累计任务时限控制 |
+| `max_retries` | 0 / 0–2 | 仅明确429/5xx可重试，默认不重试 |
+
+输入预留采用“请求正文UTF-8字节数 + 4096开销”，再加输出token上限，避免依赖第三方分词器；这是保守本地估计，不能保证覆盖所有未来模型的分词/内部开销。费用用用户填写的单价计算，缓存输入按普通输入计费估算；不做币种换算，也不保证等于供应商账单或构成账户级硬限额。
+
+- 网络I/O前，在SQLite事务中校验任务所有权/停止请求、预算，持久化一条 `reserved` 调用；预算不足不发送请求，以 `api_budget_exhausted` 结束研究。
+- 成功且usage有效时，记录供应商input/output用量并按声明单价结算。OpenAI读取input_tokens/output_tokens；DeepSeek读取prompt_tokens/completion_tokens。
+- 用量缺失/无效、超时、断线、读取中断等保留整次预留，不能记成零费用。已知usage但提案无效，仍按usage记账。
+- 供应商报告用量超过预留时按报告用量记账并停止，可能高于本地预算，不声称供应商侧费用被硬封顶。
+- 每个重试先取得独立预留；调用次数、token和费用不足都会停止。不会因密钥/模型/权限错误、无效提案、超时或断线而盲目重试。
+
+预算与轮次分别生效：模型输出stop会结束研究；公式拒绝消耗一轮；HTTP失败不伪造为一次成功因子实验。达到API预算属于受控停止，不代表找到改进。
+
+## 5. 暂停、取消和重启
+
+| 发生位置 | 恢复行为 |
+| --- | --- |
+| 提案成功入库、尚未写研究pending | 保存的同轮提案与原请求摘要匹配时可复用，不再次HTTP调用 |
+| 实验已经保存、尚未写轮次结论 | 沿用确定实验编号，复用原实验 |
+| 请求已预留，进程在等待远端时被停止 | 标记unknown并保留预留；远端可能仍处理，不能撤回或保证不计费 |
+| unknown调用的原会话继续 | 不自动重发；任务失败并提示核对，避免静默重复付费 |
+| 明确可重试的429/5xx | 只在该会话设置的重试次数及总预算内再申请预留 |
+| 应用重启 | 排队/运行任务转interrupted，已有reserved调用转unknown，不自动执行 |
+| 用户新建重试 | 新job_id、新预算，retry_of指向旧任务；旧调用记录和可能发生的费用保留 |
+
+API任务暂停后有待执行内容时恢复为queued，不会误入手动waiting_input；API会话不接受粘贴提案。**新建重试可能再次付费**，并不是重置旧供应商账单或重新取得最终留出独立资格。
+
+## 6. 存储、接口和故障定位
+
+- `model_settings`：按提供方保存非敏感模型、币种和单价。
+- `model_calls`：按job/round/attempt唯一保存请求、摘要、冻结配置、预留/结算、有效提案或安全错误。状态为reserved、succeeded、failed、unknown。
+- `jobs` / `job_events`：保留会话配置和model_reserved/model_succeeded/model_failed事件。
+- GET `/api/lab/models`：配置、固定地址、密钥变量是否存在；POST同路径：保存模型/单价/币种，不接受密钥。
+- POST `/api/lab/sessions`：增加 `provider=manual|openai|deepseek` 和可选 `api_budget`。
+- GET `/api/lab/jobs/{id}`：增加 `model_usage` 与 `model_calls`；导出会包含开发摘要及模型提案，按本地研究资料保存。
+
+| 提示 | 建议动作 |
+| --- | --- |
+| 缺少环境密钥 | 在启动终端设置对应变量并重启，页面只核对是否存在 |
+| 未配置单价 | 在研究室保存与预算币种一致的声明单价 |
+| HTTP401/403 | 核对密钥、API账户权限、地域及模型权限；不导出供应商错误正文 |
+| HTTP429/5xx | 检查供应商状态和额度；有明确重试预算才自动重试 |
+| 网络/代理失败 | 检查目标域名及代理；错误不表示已确认额度耗尽 |
+| 无效输出/拒答/截断 | 查看安全分类和已记录用量，核对模型/输出上限，必要时调整设置后新建任务 |
+| token预留不足 | 上下文可能较大，核对本地预留与总预算，不通过关闭记录绕过预算 |
+
+真实联测需各自有效Key、API账户额度/权限和可访问的网络。官方协议参考：[OpenAI Responses](https://platform.openai.com/docs/api-reference/responses/create)、[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion)。本次未成功访问这两个文档站点，也没有发起真实付费API调用；示例响应和测试用量均为明确合成。

@@ -1,4 +1,4 @@
-"""Manual proposal ingestion and the contract for a future model API adapter."""
+"""Constrained proposal ingestion shared by manual and model API adapters."""
 import json
 from typing import Protocol
 
@@ -17,8 +17,8 @@ PROPOSAL_SCHEMA = {
 class ProposalProvider(Protocol):
     """Implementations receive only scoped context/feedback, never raw market or holdout rows.
 
-    A future API provider must additionally reserve/record call and token budgets before
-    network I/O. No remote provider is implemented or called in this manual-first release.
+    API providers reserve durable call/token/cost budgets before network I/O.
+    Only development summaries are sent; no model can execute arbitrary tools.
     """
     def propose(self, context: dict, feedback: list) -> dict | None: ...
 

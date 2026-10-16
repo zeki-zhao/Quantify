@@ -1,0 +1,30 @@
+'use strict';
+const $=id=>document.getElementById(id),esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pct=value=>value===undefined?'—':(value*100).toFixed(3)+'%';
+const table=(heads,rows)=>`<table><thead><tr>${heads.map(v=>`<th>${esc(v)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(v=>`<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+let state={active_id:null,events:[]},versions={freezes:[],evaluations:[],strategies:[]},runs=[],factors=[],selected=null,busy=false;
+async function api(path,payload){const r=await fetch(path,payload===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const b=await r.json();if(!r.ok)throw new Error(b.error||'请求失败');return b;}
+async function action(fn){if(busy)return;busy=true;$('status').className='';$('status').textContent='正在处理…';try{await fn();$('status').textContent='操作完成。';}catch(e){$('status').className='error';$('status').textContent=e.message;}finally{busy=false;}}
+function options(id,items,label,empty){const previous=$(id).value;$(id).replaceChildren();if(empty)$(id).add(new Option(empty,''));for(const v of items)$(id).add(new Option(label(v),v.id));if([...$(id).options].some(o=>o.value===previous))$(id).value=previous;}
+function chooseRun(){const run=runs.find(r=>r.id===$('experiment').value);const ids=run?.request.factor_ids||[];options('factor',ids.map(id=>factors.find(f=>f.id===id)).filter(Boolean),f=>f.name+' · '+f.id.slice(0,10));$('objective-info').textContent=run?'冻结的目标与约束：'+JSON.stringify(run.request.objective):'';}
+function show(id){selected=id;const f=versions.freezes.find(v=>v.id===id),r=versions.evaluations.find(v=>v.freeze_id===id);$('result').hidden=false;$('result-json').textContent=JSON.stringify({frozen:f,evaluation:r||'尚未验收'},null,2);}
+async function refresh(){
+ [state,versions,runs,factors]=await Promise.all([api('/api/strategies/state'),api('/api/strategies/versions'),api('/api/workspace/experiments'),api('/api/workspace/factors')]);
+ runs=runs.filter(r=>r.status==='completed');options('experiment',runs,r=>r.id.slice(0,10)+' · '+r.created_at);options('reference',runs,r=>r.id.slice(0,10)+' · '+r.request.factor_ids.length+' 因子','同期全池');chooseRun();
+ $('versions').innerHTML=table(['版本','数据性质','收益口径','固定因子','验收状态','独立性','准入'],versions.freezes.map(f=>{const r=versions.evaluations.find(v=>v.freeze_id===f.id);return [f.name+' · '+f.id.slice(0,10),f.is_demo?'合成 / 测试':'来源由用户声明',f.price_basis==='unadjusted'?'未复权价格，不含分红':'含分红指数（口径由用户声明）',f.factor_id.slice(0,10),r?(r.status==='failed'?'失败：'+r.error:'已评估'):'尚未验收',r?(r.independent?'台账未暴露':'已暴露，仅探索'):'—',r?.accepted?'通过（研究用途）':r?'未通过':'—'];}));
+ $('versions').querySelectorAll('tbody tr').forEach((tr,i)=>{const f=versions.freezes[i],td=document.createElement('td');for(const [label,handler] of [['详情',()=>show(f.id)],['最终验收',()=>action(async()=>{await api('/api/strategies/evaluate',{freeze_id:f.id});await refresh();show(f.id);})]]){const b=document.createElement('button');b.className='secondary';b.textContent=label;b.onclick=handler;td.append(b);}tr.append(td);});
+ const eligible=versions.freezes.filter(f=>versions.evaluations.some(r=>r.freeze_id===f.id&&r.accepted));options('target',eligible,f=>f.name+' · '+f.id.slice(0,10));
+ const active=versions.freezes.find(f=>f.id===state.active_id);$('active').textContent=active?`当前研究版本：${active.name} · ${active.is_demo?'合成数据，流程演示':'来源由用户声明'} · ${active.id}`:'当前没有启用研究版本';
+ $('events').innerHTML=table(['序号','操作','版本','前版本','生效时间','理由'],state.events.map(e=>[e.seq,e.action,e.strategy_id?.slice(0,10)||'退役',e.previous_id?.slice(0,10)||'无',e.created_at,e.reason]));
+ const snapshots=await api('/api/workspace/snapshots');options('snapshot',snapshots.filter(s=>['monthly','monthly_price'].includes(s.kind)),s=>s.id.slice(0,10)+' · '+s.date_range.join(' 至 '));options('observed',versions.strategies,s=>s.name+' · '+s.id.slice(0,10));
+ if(selected)show(selected);
+}
+function forward(result){$('forward-note').textContent=(result.is_demo?'合成数据。':'来源由用户声明。')+(result.return_basis==='price'?'未复权价格收益，不含分红，公司行动跳变未调整。':'含分红指数收益。')+`成熟窗口 ${result.evaluated_windows}，等待成熟 ${result.pending_labels}。`+(result.state==='insufficient_mature_labels'?'成熟样本不足，暂不判断退化。':result.degradation?'观察到相对最终验收的指标下降，请核查；不会自动替换版本。':'继续观察。')+result.note;$('forward-json').textContent=JSON.stringify(result,null,2);$('forward-metrics').innerHTML=result.selected?table(['分组','上涨比例','平均收益','最差单笔','样本数'],[['前向筛选',result.selected],['同期全池',result.pool],['最终验收参考',result.final_reference]].map(([name,s])=>[name,pct(s.positive_rate),pct(s.mean_return),pct(s.worst_return),s.observations])):'';}
+$('freeze-form').onsubmit=e=>{e.preventDefault();action(async()=>{const f=await api('/api/strategies/freeze',{experiment_id:$('experiment').value,baseline_id:$('reference').value||null,factor_id:$('factor').value,name:$('name').value});selected=f.id;await refresh();});};
+$('experiment').onchange=chooseRun;
+$('change-form').onsubmit=e=>{e.preventDefault();action(async()=>{await api('/api/strategies/change',{action:$('operation').value,expected_active:state.active_id,reason:$('reason').value,freeze_id:$('target').value||null});await refresh();});};
+$('signal').onclick=()=>action(async()=>{const signal=await api('/api/strategies/signal',{snapshot_id:$('snapshot').value});$('observed').value=signal.strategy_id;forward(await api('/api/strategies/forward/'+signal.strategy_id));});
+$('observe').onclick=()=>action(async()=>forward(await api('/api/strategies/observe',{strategy_id:$('observed').value,snapshot_id:$('snapshot').value})));
+$('report').onclick=()=>action(async()=>forward(await api('/api/strategies/forward/'+$('observed').value)));
+$('export').onclick=()=>{const url=URL.createObjectURL(new Blob([$('result-json').textContent],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='quantify-frozen-validation.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+$('refresh').onclick=()=>action(refresh);action(refresh);

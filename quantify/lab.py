@@ -1,6 +1,10 @@
 """Manual ChatGPT collaboration: persistent sessions, scoped tools and bounded rounds."""
 from .core import integer, number
+from .objectives import policy
+from .model_api import ModelSettings, api_limits, credential
 from .market import MarketService
+from .portfolio_service import PortfolioService
+from .lifecycle import Lifecycle
 from .expressions import GRAMMAR, validate_expression
 from .jobs import QueueManager
 from .proposals import parse_proposals, PROPOSAL_SCHEMA
@@ -17,8 +21,11 @@ def initial_progress(baseline):
 class Lab:
     def __init__(self, directory):
         self.workbench = Workbench(directory)
+        self.lifecycle = Lifecycle(self.workbench)
         self.queue = QueueManager(directory)
         self.store = self.queue.store
+        self.models = ModelSettings(self.store)
+        self.portfolio = PortfolioService(self.workbench, self.store)
         self.market = MarketService(directory, self.store)
 
     def close(self):
@@ -34,7 +41,7 @@ class Lab:
             if old['engine'] != engine_fingerprint():
                 raise ValueError('旧实验引擎已改变，请按原参数创建新的基线')
             request = old['request']
-        allowed = {'snapshot_id', 'factor_ids', 'horizon', 'top_k', 'cost_bps', 'holdout_months'}
+        allowed = {'snapshot_id', 'factor_ids', 'horizon', 'top_k', 'cost_bps', 'holdout_months', 'objective'}
         if not isinstance(request, dict) or set(request) - allowed or not {'snapshot_id', 'factor_ids'} <= set(request):
             raise ValueError('实验请求字段无效')
         if not isinstance(request['factor_ids'], list) or not 1 <= len(request['factor_ids']) <= 10:
@@ -46,20 +53,33 @@ class Lab:
         return self.store.create('experiment', payload, timeout_seconds)
 
     def create_session(self, *, baseline_id, goal, max_rounds=5, max_candidates=5,
-                       patience=3, timeout_seconds=300, min_mean_improvement=0., max_tail_deterioration=0.):
+                       patience=3, timeout_seconds=300, min_mean_improvement=None, max_tail_deterioration=None, provider='manual', api_budget=None):
         if not isinstance(goal, str) or not goal.strip() or len(goal) > 2000:
             raise ValueError('研究目标需为 1 至 2000 字')
+        if provider not in ('manual', 'openai', 'deepseek'):
+            raise ValueError('提供方必须为 manual、openai 或 deepseek')
+        if provider == 'manual' and api_budget is not None:
+            raise ValueError('手动会话无需API预算')
+        api_config = None
+        if provider != 'manual':
+            credential(provider)
+            api_config = self.models.configuration(provider)
+            if api_config['input_price_per_million'] is None:
+                raise ValueError('请先配置该提供方的模型和预算估算单价')
+            api_config['limits'] = api_limits(api_budget)
         baseline = self.store.get('experiment', baseline_id)
         progress = initial_progress(baseline)
         ResearchTools(self.store.directory, baseline_id, progress).call('get_research_context')
-        payload = dict(baseline_id=baseline_id, goal=goal.strip(), provider='manual', proposals=[],
+        payload = dict(objective=policy(baseline['request']['objective']), baseline_id=baseline_id, goal=goal.strip(), provider=provider, proposals=[],
                        max_rounds=integer(max_rounds, '最大轮数', 1, 10),
                        max_candidates=integer(max_candidates, '候选数', 1, 10),
                        patience=integer(patience, '停止前无改进轮数', 1, 10),
-                       min_mean_improvement=number(min_mean_improvement, '最低平均收益改善', 0, 1),
-                       max_tail_deterioration=number(max_tail_deterioration, '最差单笔收益允许下降', 0, 1))
+                       min_mean_improvement=None if min_mean_improvement is None else number(min_mean_improvement, '最低平均收益改善', 0, 1),
+                       max_tail_deterioration=None if max_tail_deterioration is None else number(max_tail_deterioration, '最差单笔收益允许下降', 0, 1))
+        if api_config is not None:
+            payload['api'] = api_config
         return self.store.create('research', payload, integer(timeout_seconds, '累计运行秒数', 1, 3600),
-                                 progress, status='waiting_input')
+                                 progress, status='waiting_input' if provider == 'manual' else 'queued')
 
     def research_package(self, job_id):
         job = self.store.job(job_id)
@@ -73,14 +93,15 @@ class Lab:
             '不得编造实验结果或声称已经运行。仅输出 proposal_schema 对应的 JSON 对象或数组。'
             '公式只使用 formula_language 中的函数/字段；质量字段不可用时不得引用。'
             '输出 action、name、expression、rationale；若没有有根据的新方案，action=stop。'
-            '当前选择标准为扣费平均单笔收益改善且尾部遵守约束；自然语言目标用于解释假设，'
+            '按 context.objective 的结构化主目标与约束提出方案；自然语言目标用于解释假设，'
             '不代表系统已实现换手、回撤或组合指标。')
         return {'session_id': job_id, 'goal': job['payload']['goal'], 'prompt': prompt, 'context': context,
                 'constraints': {key: job['payload'][key] for key in ('max_rounds', 'max_candidates', 'patience',
-                               'min_mean_improvement', 'max_tail_deterioration')},
+                               'min_mean_improvement', 'max_tail_deterioration', 'objective')},
                 'progress': {key: job['progress'][key] for key in ('rounds', 'candidates', 'best_id', 'outcomes')},
                 'elapsed_seconds': job['elapsed_seconds'], 'timeout_seconds': job['timeout_seconds'],
-                'notice': '手动协作包，仅含开发窗指标和因子定义；本程序没有调用远程模型。'}
+                'provider': job['payload']['provider'],
+                'notice': '仅含开发窗指标和因子定义；手动可复制给模型，API会话由固定提供方生成提案。'}
 
     def retry(self, job_id):
         old = self.store.job(job_id)
@@ -96,17 +117,19 @@ class Lab:
             if old['payload']['engine'] != engine_fingerprint():
                 raise ValueError('代码版本改变，请创建新实验')
             progress = {}
-        status = 'waiting_input' if old['kind'] == 'research' and not old['payload']['proposals'] else 'queued'
+        status = 'waiting_input' if old['kind'] == 'research' and old['payload'].get('provider', 'manual') == 'manual' and not old['payload']['proposals'] else 'queued'
         return self.store.create(old['kind'], old['payload'], old['timeout_seconds'], progress,
                                  status=status, retry_of=job_id)
 
     def get(self, path):
+        if path == '/api/lab/models':
+            return self.models.views()
         if path == '/api/lab/capabilities':
-            return {'provider': 'manual', 'remote_model_calls': False, 'tools': TOOL_NAMES,
+            return {'providers': ['manual', 'openai', 'deepseek'], 'remote_model_calls': True, 'tools': TOOL_NAMES,
                     'formula_language': GRAMMAR, 'proposal_schema': PROPOSAL_SCHEMA}
         if path == '/api/lab/jobs':
             return [{key: value for key, value in job.items() if key not in ('payload', 'progress', 'owner')}
-                    | {'goal': job['payload'].get('goal', '历史日线下载' if job['kind'] == 'history' else '单次因子实验')}
+                    | {'goal': job['payload'].get('goal', '历史日线下载' if job['kind'] == 'history' else '组合回放' if job['kind'] == 'portfolio' else '单次因子实验')}
                     for job in self.store.jobs()]
         prefix = '/api/lab/jobs/'
         if path.startswith(prefix):
@@ -115,10 +138,13 @@ class Lab:
                 return self.research_package(parts[0])
             if len(parts) == 1:
                 job = self.store.job(parts[0]); job.pop('owner')
-                return {**job, 'events': self.store.events(parts[0])}
+                return {**job, 'events': self.store.events(parts[0]),
+                        'model_usage': self.store.model_calls.summary(parts[0]), 'model_calls': self.store.model_calls.records(parts[0])}
         raise ValueError('研究室路径不存在')
 
     def post(self, path, payload):
+        if path == '/api/lab/models':
+            return self.models.configure(**payload)
         if path == '/api/lab/experiments':
             return self.submit_experiment(**payload)
         if path == '/api/lab/sessions':

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quantify · 组合回放</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/workspace.css"><script src="/portfolio.js" defer></script></head>
+<body><header><span class="logo">Q</span><div><h1>组合回放</h1><p>现金 · 持仓 · 成交 · 成本 · 净值</p></div><a href="/workspace">返回研究工作台 ↗</a></header>
+<main><nav><a href="/strategies">验证与版本管理</a><a href="/lab">AI 研究室与任务</a><a href="/market">在线行情与下载</a></nav>
+<p class="notice">固定因子的开发窗探索性回放，不代表独立最终验收。月度收盘确定股数，下一观察日开盘模拟；100股整手、T+1，显式停牌与涨跌停限制。固定池存在幸存者偏差；未复权价格不含分红，公司行动尚未处理。无券商连接。</p>
+<p id="status" role="status" aria-live="polite"></p>
+<section><div class="section-head"><h2>1. 创建组合版本</h2><button id="demo" class="secondary">准备合成账本示例</button></div><p>实际数据先在数据中心导入“执行状态”，并由同一未复权日线生成月度价格面板，完成开发实验。选股只用绑定因子；不会继承单笔研究的启用资格。每次修改保存新版本。</p>
+<form id="spec-form"><div class="grid">
+<label>开发实验<select id="experiment" required></select></label><label>固定因子<select id="factor" required></select></label>
+<label>未复权日线<select id="daily" required></select></label><label>开盘前执行状态<select id="execution" required></select></label>
+<label>名称<input id="name" maxlength="100" value="组合研究版本" required></label><label>父版本（可选）<select id="parent"><option value="">初始版本</option></select></label>
+<label>初始资金（元）<input id="initial_cash" type="number" min="100" max="1000000000" step="0.01" value="100000" required></label>
+<label>选股数<input id="top_k" type="number" min="1" max="99" value="2" required></label>
+<label>调仓周期（月）<select id="rebalance_months"><option value="1">1</option><option value="3" selected>3</option><option value="6">6</option><option value="12">12</option></select></label>
+<label>目标现金比例<input id="cash_buffer" type="number" min="0" max="0.9" step="0.01" value="0.02" required></label>
+<label>佣金（bps/边）<input id="commission_bps" type="number" min="0" max="1000" step="0.01" value="3" required></label>
+<label>最低佣金（元/单）<input id="min_commission" type="number" min="0" max="10000" step="0.01" value="5" required></label>
+<label>卖出印花税（bps）<input id="stamp_tax_bps" type="number" min="0" max="1000" step="0.01" value="5" required></label>
+<label>过户费（bps/边）<input id="transfer_fee_bps" type="number" min="0" max="1000" step="0.01" value="0.1" required></label>
+<label>不利滑点（bps/边）<input id="slippage_bps" type="number" min="0" max="1000" step="0.01" value="5" required></label>
+</div><p class="muted">1 bps = 0.01%。费用按固定假设计算，不代表历史各期真实税率。等权全池参照使用同样日历、资金、费用和执行约束；终点持仓不强平。</p><button type="submit">保存不可变组合版本</button></form></section>
+<section><div class="section-head"><h2>2. 版本与后台回放</h2><button id="refresh" class="secondary">刷新</button></div><div id="specs" class="table-wrap"></div><p>任务在后台串行执行，关闭页面不影响计算；可在 <a href="/lab">任务页</a>查看、取消和重试。刷新后可重新打开已完成结果。</p><p id="job-info" aria-live="polite"></p><button id="cancel" class="secondary" disabled>取消当前任务</button><button id="retry" class="secondary" disabled>新建重试</button><div id="runs" class="table-wrap"></div></section>
+<section id="result" hidden><h2>3. 净值与账目</h2><p id="result-note" class="notice"></p><div id="metrics" class="table-wrap"></div><figure><svg id="nav-chart" viewBox="0 0 900 260" role="img" aria-label="筛选组合与等权全池净值曲线"></svg><figcaption>绿色：筛选组合；蓝色：等权全池。横轴为观察日，纵轴为单位净值。</figcaption></figure>
+<h3>期末持仓（筛选组合）</h3><div id="holdings" class="table-wrap"></div>
+<details open><summary>最近50笔成交（筛选组合）</summary><div id="trades" class="table-wrap"></div></details>
+<details><summary>未全额成交与未执行订单</summary><div id="orders" class="table-wrap"></div></details>
+<details><summary>最近50个观察日的账目</summary><div id="curve" class="table-wrap"></div></details>
+<button id="replay" class="secondary">按固定版本重新回放</button><button id="export" class="secondary">导出完整双账本 JSON</button>
+<details><summary>版本、逐日净值、成交及信号完整数据</summary><pre id="result-json"></pre></details></section>
+</main></body></html>

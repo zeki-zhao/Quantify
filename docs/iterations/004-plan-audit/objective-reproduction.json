@@ -1,0 +1,53 @@
+{
+  "baseline": {
+    "mean_return": 0.02522531797372677,
+    "note": "样本为股票×入场月；横截面相关，不是独立试验，不提供伪精确置信区间",
+    "observations": 16,
+    "positive_rate": 0.6875,
+    "worst_return": -0.1803076118505451
+  },
+  "goal": "在平均收益和尾部不恶化的前提下优先提高上涨比例",
+  "is_demo": true,
+  "note": "仅合成数据中的规则核查；不是实际市场收益",
+  "outcomes": [
+    {
+      "round": 1,
+      "formula": "-volatility(6,0)",
+      "status": "improved",
+      "selected": {
+        "mean_return": 0.03480669440793628,
+        "note": "样本为股票×入场月；横截面相关，不是独立试验，不提供伪精确置信区间",
+        "observations": 16,
+        "positive_rate": 0.6875,
+        "worst_return": -0.17341239749232873
+      },
+      "difference": {
+        "mean_return": 0.009581376434209511,
+        "observations": 0,
+        "positive_rate": 0.0,
+        "worst_return": 0.006895214358216384
+      },
+      "factor_parent": "0297867fb2c6e3a858cb9a41c82a8c9dd9551ed926b33703625eb3039a1f273a"
+    },
+    {
+      "round": 2,
+      "formula": "rank(momentum(12,1))-rank(volatility(6,0))",
+      "status": "improved",
+      "selected": {
+        "mean_return": 0.03763634680309628,
+        "note": "样本为股票×入场月；横截面相关，不是独立试验，不提供伪精确置信区间",
+        "observations": 16,
+        "positive_rate": 0.625,
+        "worst_return": -0.11322839388923567
+      },
+      "difference": {
+        "mean_return": 0.002829652395159997,
+        "observations": 0,
+        "positive_rate": -0.0625,
+        "worst_return": 0.06018400360309306
+      },
+      "factor_parent": "0297867fb2c6e3a858cb9a41c82a8c9dd9551ed926b33703625eb3039a1f273a"
+    }
+  ],
+  "baseline_factor_id": "0297867fb2c6e3a858cb9a41c82a8c9dd9551ed926b33703625eb3039a1f273a"
+}

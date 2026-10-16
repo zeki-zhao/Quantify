@@ -16,7 +16,9 @@ from quantify.datasets import SCHEMAS
 
 ROOT = Path(__file__).resolve().parent
 WORK = threading.BoundedSemaphore(1)
-STATIC = {"/market": ("market.html", "text/html"), "/market.js": ("market.js", "text/javascript"),
+STATIC = {"/portfolio": ("portfolio.html", "text/html"), "/portfolio.js": ("portfolio.js", "text/javascript"),
+          "/strategies": ("strategies.html", "text/html"), "/strategies.js": ("strategies.js", "text/javascript"),
+          "/market": ("market.html", "text/html"), "/market.js": ("market.js", "text/javascript"),
           "/lab": ("lab.html", "text/html"), "/lab.js": ("lab.js", "text/javascript"),
           "/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
           "/style.css": ("style.css", "text/css"),
@@ -69,9 +71,9 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_data(200, ','.join(SCHEMAS[kind]) + '\n', 'text/csv')
             return
-        if self.path.startswith(('/api/workspace/', '/api/lab/', '/api/market/')):
+        if self.path.startswith(('/api/workspace/', '/api/lab/', '/api/market/', '/api/strategies/', '/api/portfolio/')):
             try:
-                self.send_json(200, (self.lab().market if self.path.startswith('/api/market/') else self.lab() if self.path.startswith('/api/lab/') else self.workbench()).get(self.path))
+                self.send_json(200, (self.lab().portfolio if self.path.startswith('/api/portfolio/') else self.lab().lifecycle if self.path.startswith('/api/strategies/') else self.lab().market if self.path.startswith('/api/market/') else self.lab() if self.path.startswith('/api/lab/') else self.workbench()).get(self.path))
             except ValueError as exc:
                 self.send_json(400, {'error': str(exc)})
             except (OSError, sqlite3.Error):
@@ -88,9 +90,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "路径不存在"})
 
     def do_POST(self):
-        is_lab = self.path in {'/api/lab/' + name for name in ('experiments', 'sessions', 'proposals', 'control', 'retry', 'validate')}
+        is_lab = self.path in {'/api/lab/' + name for name in ('experiments', 'sessions', 'proposals', 'control', 'retry', 'validate', 'models')}
+        is_portfolio = self.path in {'/api/portfolio/' + name for name in ('specs', 'runs', 'demo')}
+        is_strategy = self.path in {'/api/strategies/' + name for name in ('freeze', 'evaluate', 'change', 'signal', 'observe')}
         is_market = self.path in {'/api/market/' + name for name in ('config', 'refresh', 'history')}
-        if not is_lab and not is_market and self.path not in ("/api/analyze", "/api/research") and self.path not in {
+        if not is_lab and not is_market and not is_strategy and not is_portfolio and self.path not in ("/api/analyze", "/api/research") and self.path not in {
                 "/api/workspace/" + name for name in ("import", "demo", "monthly", "as-of", "factors", "experiments", "compare", "replay")}:
             self.send_json(404, {"error": "路径不存在"})
             return
@@ -106,7 +110,9 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8"), parse_constant=reject_constant)
             if not isinstance(payload, dict):
                 raise ValueError("请求必须为 JSON 对象")
-            if is_market:
+            if is_portfolio and self.path != '/api/portfolio/demo':
+                result = self.lab().portfolio.post(self.path, payload)
+            elif is_market:
                 result = self.lab().market.post(self.path, payload)
             elif is_lab:
                 result = self.lab().post(self.path, payload)
@@ -129,6 +135,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(503, {"error": "本地存储不可用，请检查运行目录权限或备份"})
 
     def compute_request(self, payload):
+        if self.path.startswith("/api/portfolio/"):
+            return self.lab().portfolio.post(self.path, payload)
+        if self.path.startswith("/api/strategies/"):
+            return self.lab().lifecycle.post(self.path, payload)
         if self.path.startswith("/api/workspace/"):
             return self.workbench().post(self.path, payload)
         if self.path == "/api/analyze":

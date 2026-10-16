@@ -8,16 +8,17 @@ from . import datasets, factors
 from .core import integer, number
 from .research import demo_csv, evaluate, parse_panel
 from .storage import ResearchStore
+from .objectives import policy
 
 
 def engine_fingerprint():
     root = Path(__file__).parent
-    names = ('research.py', 'factors.py', 'core.py', 'datasets.py', 'workbench.py', 'expressions.py')
+    names = ('research.py', 'factors.py', 'core.py', 'datasets.py', 'workbench.py', 'expressions.py', 'objectives.py', 'lifecycle.py', 'worker.py', 'research_tools.py', 'lab.py', 'model_api.py', 'model_calls.py', 'portfolio.py', 'portfolio_service.py')
     hashed = hashlib.sha256()
     for name in names:
         hashed.update(name.encode())
         hashed.update((root / name).read_bytes())
-    return {'sha256': hashed.hexdigest(), 'python': platform.python_version(), 'protocol': 'monthly-walk-forward-v2'}
+    return {'sha256': hashed.hexdigest(), 'python': platform.python_version(), 'protocol': 'monthly-walk-forward-v3'}
 
 
 class Workbench:
@@ -25,12 +26,14 @@ class Workbench:
         self.store = ResearchStore(directory)
         factors.initialize_factors(self.store)
 
-    def run(self, *, snapshot_id, factor_ids, horizon=3, top_k=2, cost_bps=20, holdout_months=12, _experiment_id=None):
+    def run(self, *, snapshot_id, factor_ids, horizon=3, top_k=2, cost_bps=20, holdout_months=12, objective=None, _experiment_id=None):
         # Persist failures after accepting a valid request shape, so unsuccessful research is not lost.
         request = dict(snapshot_id=snapshot_id, factor_ids=factor_ids, horizon=horizon,
-                       top_k=top_k, cost_bps=cost_bps, holdout_months=holdout_months)
+                       top_k=top_k, cost_bps=cost_bps, holdout_months=holdout_months, objective=objective)
         engine = engine_fingerprint()
         try:
+            objective = policy(objective)
+            request['objective'] = objective
             if not isinstance(factor_ids, list) or not 1 <= len(factor_ids) <= 10:
                 raise ValueError('需要选择 1 至 10 个因子版本')
             if len(set(factor_ids)) != len(factor_ids):
@@ -54,7 +57,7 @@ class Workbench:
             development = [row for row in snapshot['rows'] if row['date'] < cutoff]
             development_csv = datasets.csv_text(snapshot['kind'], development)
             report = evaluate(development_csv, horizon=horizon, top_k=top_k, cost_bps=cost_bps,
-                              source=snapshot['source'], factor_specs=specs, warmup_months=30, return_basis=return_basis)
+                              source=snapshot['source'], factor_specs=specs, warmup_months=30, return_basis=return_basis, objective=objective)
             report['is_demo'] = snapshot['is_demo']
             report['status'] = ('合成数据，仅验证流程' if snapshot['is_demo'] else
                                 '导入数据的探索性验证；来源声明未经外部核验')
@@ -65,7 +68,7 @@ class Workbench:
             report['snapshot_id'] = snapshot_id
             report['snapshot_warnings'] = snapshot['warnings']
             protocol = {'deterministic': True, 'random_seed': None, 'warmup_months': 30, 'holdout_months': holdout_months, 'holdout_start': cutoff,
-                        'holdout_evaluated': False, 'return_basis': return_basis, 'development_end': development[-1]['date'],
+                        'holdout_evaluated': False, 'objective': objective, 'return_basis': return_basis, 'development_end': development[-1]['date'],
                         'note': '末尾月份封存且不参与本次计算；开发窗可反复比较，不代表独立最终验收。'}
             body = {'status': 'completed', 'request': request, 'engine': engine, 'protocol': protocol, 'report': report}
         except (ValueError, TypeError, KeyError) as exc:
@@ -77,8 +80,8 @@ class Workbench:
         right = self.store.get('experiment', right_id)
         if any(item['status'] != 'completed' for item in (left, right)):
             raise ValueError('只能比较成功完成的实验')
-        for key in ('snapshot_id', 'horizon', 'top_k', 'cost_bps', 'holdout_months'):
-            if left['request'][key] != right['request'][key]:
+        for key in ('snapshot_id', 'horizon', 'top_k', 'cost_bps', 'holdout_months', 'objective'):
+            if left['request'].get(key) != right['request'].get(key):
                 raise ValueError('实验数据与评估参数必须相同，才能比较因子版本')
         if left['engine'] != right['engine'] or left['protocol'] != right['protocol']:
             raise ValueError('引擎或评估协议不同，请使用同一版本重新实验')

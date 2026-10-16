@@ -8,6 +8,7 @@ from datetime import date
 from statistics import mean
 
 from .core import integer, number
+from .objectives import policy, assess
 from .factors import BUILTINS, calculate, history_length, required_fields as factor_fields, validate_spec, series_level
 
 FIELDS = ["date", "symbol", "total_return_index", "quality", "value", "available_at"]
@@ -101,7 +102,8 @@ def statistics(returns):
             "worst_return": min(returns), "note": "样本为股票×入场月；横截面相关，不是独立试验，不提供伪精确置信区间"}
 
 
-def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合成研究面板 v1", factor_specs=None, warmup_months=None, return_basis='total_return'):
+def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合成研究面板 v1", factor_specs=None, warmup_months=None, return_basis='total_return', objective=None):
+    objective = policy(objective)
     horizon = integer(horizon, "研究持有月数", 3, 12)
     if horizon not in (3, 6, 12):
         raise ValueError("持有月数必须为 3、6 或 12")
@@ -141,9 +143,12 @@ def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合�
     for start in range(warmup + 36 + horizon, len(panel) - horizon - 1, 12):
         train = list(range(start - horizon - 36, start - horizon - 1))
         train = [i for i in train if i >= lookback and i + 1 + horizon < start]
-        fitness = {factor: statistics([r for i in train for r in event(i, factor)])["positive_rate"]
-                   for factor in candidates}
-        chosen = max(candidates, key=lambda factor: fitness[factor])
+        training = {factor: statistics([r for i in train for r in event(i, factor)]) for factor in candidates}
+        reference = training[candidates[0]]
+        decisions = {factor: assess(training[factor], reference, objective) for factor in candidates}
+        eligible = [factor for factor in candidates if decisions[factor]['accepted']]
+        fitness = {factor: training[factor][objective['primary']] for factor in candidates}
+        chosen = max(eligible, key=lambda factor: (fitness[factor], training[factor]['mean_return'])) if eligible else candidates[0]
         # Non-overlapping holding windows within/across 12-month test blocks.
         test = list(range(start, min(start + 12, len(panel) - horizon - 1), horizon))
         chosen_results = [r for i in test for r in event(i, chosen)]
@@ -156,7 +161,8 @@ def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合�
                       "train_last_label": dates[train[-1] + 1 + horizon].isoformat(),
                       "test_signal_start": dates[test[0]].isoformat(),
                       "test_last_exit": dates[test[-1] + 1 + horizon].isoformat(),
-                      "chosen_factor": chosen, "training_rates": fitness,
+                      "chosen_factor": chosen, "training_rates": {f: training[f]["positive_rate"] for f in candidates},
+                      "training_objective_scores": fitness, "training_decisions": decisions,
                       "selected": statistics(chosen_results), "baseline": statistics(baseline)})
     if not folds:
         raise ValueError("数据不足以形成完整的训练及样本外持有窗口")
@@ -186,4 +192,6 @@ def evaluate(csv_text=None, horizon=3, top_k=2, cost_bps=20, source="人工合�
         report['factor_definitions']['momentum'] = '过去6个月未复权收盘价格涨幅；不含分红'
         report['method'] = report['method'].replace('含分红指数收益', '未复权价格收益（不含现金分红，公司行动跳变未调整）')
     report['return_basis'] = return_basis
+    report['objective'] = objective
+    report['method'] = "训练与候选采用相同结构化目标：" + objective['primary'] + "，相对候选列表首个基线检查均值和尾部；无合格替代者时保留该基线。" + report['method'].replace("选择上涨比例最高的候选因子", "按结构化目标选择候选因子")
     return report
