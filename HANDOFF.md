@@ -1,9 +1,10 @@
 # 后续 GPT 会话交接
 
-更新日期：2026-10-16（Asia/Shanghai）。原本地工作目录：`D:\Engineering\Quantify`；当前云环境目录：`/workspace/Quantify`。
+更新日期：2026-10-17（Asia/Shanghai）。当前本地工作目录：`D:\Engineering\Quantify`；历史云环境目录：`/workspace/Quantify`。
 
 ## 当前构建计划与最近迭代
 
+- [迭代011](docs/iterations/011-local-sync/README.md)：接续云端开发前核对 GitHub 分支/PR，确认本地 `work` 与实时远端均为 `aa7dc3baa13f55d66b2cfdfb7c07ae2f897c351d`，无未合并 PR，无需拉取已提交代码；已阅读001–010交接。Windows全量126项测试通过，CLI启动与页面/脚本/因子接口检查通过；浏览器未复跑。未读取云端聊天或未提交文件，运行数据库不随Git同步。下一功能优先A3多因子引用与增量评估，下个编号012。
 - 后续实施以 [构建计划](docs/BUILD_PLAN.md) 为准；每次迭代按 [文档约定](docs/README.md) 更新 [迭代目录](docs/iterations/README.md)。
 - [迭代 001](docs/iterations/001-research-foundation/README.md)：按用户选择完成 CSV 研究基础设施，真实在线接入延期；P1.1（CSV 范围）、P1.3 和 P1.4 基础已落地，P1.2 部分完成。
 - 当前新增 `/workspace` 研究页面：CSV 导入、快照与增量、财务/股票池时点查询、日线转月度、因子参数版本、实验保存/对比/复现/导出。字段契约见 [DATA_CONTRACTS.md](docs/DATA_CONTRACTS.md)。
@@ -84,6 +85,13 @@ python -m unittest discover -s tests -v
 - 模型API软件已实现但真实联测待条件；行情更新不会自动启动AI研究，仍需成熟标签和手动创建研究会话（提案可由手动或API提供）。真实日线覆盖、财务/公司行动、动态池和退市仍待验收。
 
 ## 验证状态
+
+迭代011（2026-10-17，Windows本地接续）：
+
+- 沙箱外执行 `python -m unittest discover -s tests -v`，126项、47.641秒、`OK`。沙箱内两次尝试因临时目录权限和SQLite无法打开失败，切换执行环境后通过；没有为环境报错修改应用代码。
+- 实际 `python app.py --port 0 --data-dir runtime/sync-check/app-data` 启动成功，七个页面、共享任务脚本、诊断/组合脚本和因子接口均HTTP 200。发送Ctrl+C后进程结束，工具退出码1，不计为正常退出码验证。
+- 当前未安装Playwright，未运行浏览器端到端或目视检查；未进行真实行情和付费模型验收。运行产物仅在忽略的`runtime/sync-check/`。
+- 本轮为同步核对与交接记录，应用功能和引擎摘要未修改；以下010及更早验证均为历史结果。
 
 迭代010（2026-10-16）：
 
