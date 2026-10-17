@@ -4,6 +4,7 @@ from .objectives import policy
 from .model_api import ModelSettings, api_limits, credential
 from .market import MarketService
 from .portfolio_service import PortfolioService
+from .diagnostics_service import DiagnosticService
 from .lifecycle import Lifecycle
 from .expressions import GRAMMAR, validate_expression
 from .jobs import QueueManager
@@ -26,6 +27,7 @@ class Lab:
         self.store = self.queue.store
         self.models = ModelSettings(self.store)
         self.portfolio = PortfolioService(self.workbench, self.store)
+        self.diagnostics = DiagnosticService(self.workbench, self.store)
         self.market = MarketService(directory, self.store)
 
     def close(self):
@@ -129,7 +131,7 @@ class Lab:
                     'formula_language': GRAMMAR, 'proposal_schema': PROPOSAL_SCHEMA}
         if path == '/api/lab/jobs':
             return [{key: value for key, value in job.items() if key not in ('payload', 'progress', 'owner')}
-                    | {'goal': job['payload'].get('goal', '历史日线下载' if job['kind'] == 'history' else '组合回放' if job['kind'] == 'portfolio' else '单次因子实验')}
+                    | {'goal': job['payload'].get('goal', '历史日线下载' if job['kind'] == 'history' else '组合回放' if job['kind'] == 'portfolio' else '因子诊断' if job['kind'] == 'diagnostic' else '单次因子实验')}
                     for job in self.store.jobs()]
         prefix = '/api/lab/jobs/'
         if path.startswith(prefix):

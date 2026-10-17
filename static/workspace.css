@@ -5,3 +5,5 @@ textarea{font:inherit;padding:10px;border:1px solid #c8d4cd;border-radius:5px;ma
 #objective-info,#active,#forward-note{overflow-wrap:anywhere}.grid>label{min-width:0}.grid select{min-width:0}
 
 #nav-chart{width:100%;max-height:300px}figure{margin:18px 0}#result-note{overflow-wrap:anywhere}
+
+#diagnostic-factors label{display:flex;align-items:center;flex-direction:row;gap:8px;overflow-wrap:anywhere}#result-note,#trial-note{overflow-wrap:anywhere}

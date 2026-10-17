@@ -82,7 +82,7 @@ class JobStore(ResearchStore):
             raise LostLease('任务已经停止或执行所有者已改变')
 
     def create(self, kind, payload, timeout_seconds, progress=None, status='queued', retry_of=None):
-        if kind not in ('experiment', 'research', 'history', 'portfolio') or status not in ('queued', 'waiting_input'):
+        if kind not in ('experiment', 'research', 'history', 'portfolio', 'diagnostic') or status not in ('queued', 'waiting_input'):
             raise ValueError('任务类型或初始状态无效')
         if type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 3600:
             raise ValueError('任务运行时限需大于零且最多 3600 秒')

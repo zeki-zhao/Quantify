@@ -149,6 +149,10 @@ class ModelResearchTests(unittest.TestCase):
             self.assertEqual(transport.calls[0][1]['model'],'fixture-model')
             content=transport.calls[1][1].get('input') or transport.calls[1][1]['messages']
             self.assertIn('not_improved',json.dumps(content))
+            package=json.loads(transport.calls[1][1]['input'][0]['content'] if provider=='openai' else transport.calls[1][1]['messages'][1]['content'])
+            self.assertIn('mean_rank_ic',json.dumps(package['diagnostics']))
+            self.assertIn('mean_rank_ic',json.dumps(package['feedback'][0]['diagnostics']))
+            self.assertEqual(len(package['feedback'][0]['diagnostics']['correlations']),3)
             usage=self.store.model_calls.summary(job['id'])
             self.assertEqual(usage['calls'],2);self.assertEqual(usage['charged_tokens'],320)
             self.assertEqual(usage['uncertain_calls'],0)
@@ -245,6 +249,64 @@ class ModelResearchTests(unittest.TestCase):
         self.assertEqual(done['status'],'succeeded')
         self.assertEqual(done['progress']['rounds'],1)
         self.assertEqual(len(transport.calls),1)
+
+    def test_cached_proposal_survives_concurrent_trial_census_change(self):
+        for provider in ('openai','deepseek'):
+            job=self.session(provider,max_rounds=1)
+            def answer_then_pause():
+                self.store.control(job['id'],'pause')
+                return response(provider)
+            transport=Transport([answer_then_pause])
+            paused=self.run_job(job,transport)
+            self.assertEqual(paused['status'],'paused')
+            # A different session changes only aggregate counts while this round is paused.
+            other=self.lab.create_session(baseline_id=self.baseline['id'],goal='并发审计',provider='manual')
+            self.store.control(job['id'],'resume')
+            done=self.run_job(job,transport)
+            self.assertEqual(done['status'],'succeeded',done.get('error'))
+            self.assertEqual(len(transport.calls),1)
+            self.assertEqual(len(self.store.model_calls.records(job['id'])),1)
+            self.assertEqual(done['progress']['rounds'],1)
+            self.store.control(other['id'],'cancel')
+
+    def test_cached_request_still_rejects_changed_research_inputs(self):
+        for provider in ('openai','deepseek'):
+            job=self.session(provider,max_rounds=1)
+            claimed=self.store.claim('input-guard')
+            tools=ResearchTools(self.temp.name,self.baseline['id'],claimed['progress'])
+            context=tools.call('get_research_context')
+            transport=Transport([response(provider)])
+            adapter=APIProposalProvider(self.store,job['id'],'input-guard',claimed['payload']['api'],claimed['payload']['goal'],transport)
+            adapter.propose(context,[])
+            changed=copy.deepcopy(context)
+            changed['baseline']['selected']['mean_return']+=.1
+            with self.assertRaises(ModelError) as error:adapter.propose(changed,[])
+            self.assertEqual(error.exception.category,'context_changed')
+            adapter.goal='另一个研究目标'
+            with self.assertRaises(ModelError) as error:adapter.propose(context,[])
+            self.assertEqual(error.exception.category,'context_changed')
+            self.assertEqual(len(transport.calls),1)
+            self.store.finish(job['id'],'input-guard','cancelled')
+
+    def test_resumed_retry_keeps_original_request_and_census_snapshot(self):
+        for provider in ('openai','deepseek'):
+            job=self.session(provider,max_rounds=1,api_budget={'max_retries':1})
+            def fail_then_pause():
+                self.store.control(job['id'],'pause')
+                raise ModelError('rate_limit','合成429',retryable=True,http_status=429)
+            transport=Transport([fail_then_pause,response(provider)])
+            paused=self.run_job(job,transport)
+            self.assertEqual(paused['status'],'paused')
+            original=copy.deepcopy(self.store.model_calls.records(job['id'])[0]['request'])
+            other=self.lab.create_session(baseline_id=self.baseline['id'],goal='更新统计计数',provider='manual')
+            self.store.control(job['id'],'resume')
+            done=self.run_job(job,transport)
+            self.assertEqual(done['status'],'succeeded',done.get('error'))
+            records=self.store.model_calls.records(job['id'])
+            self.assertEqual([r['attempt'] for r in records],[1,2])
+            self.assertEqual([r['request'] for r in records],[original,original])
+            self.assertEqual(transport.calls[1][1],original)
+            self.store.control(other['id'],'cancel')
 
     def test_inflight_timeout_is_not_retried_and_recovery_preserves_reservation(self):
         job=self.session(api_budget={'max_retries':2})

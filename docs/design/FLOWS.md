@@ -479,11 +479,12 @@ loop 在原轮次/候选/patience/API预算内
   worker -> research : 每轮读取开发摘要、因子定义与当前反馈
   worker -> worker : 构造白名单上下文和固定协议请求
   worker -> db : 查同job/round已记录调用
-  alt 请求/配置一致且已有成功提案
+  alt 研究输入/配置一致（仅当前计数可变）且已有成功提案
     db --> worker : 复用缓存JSON，不发HTTP
   else 该轮reserved/unknown或不可重试失败
     worker -> db : 安全停止；不静默重复请求
   else 可首次请求或明确可重试HTTP错误
+    worker -> worker : 同轮重试沿用原存储完整请求与计数快照
     group BEGIN IMMEDIATE：网络I/O前
       worker -> db : 检查lease/stop与调用、token、估算费用预算
       worker -> db : 持久化reserved尝试与请求摘要
@@ -510,6 +511,7 @@ loop 在原轮次/候选/patience/API预算内
   end
 end
 note over worker, api
+  当前diagnostics.trial_counts变化不阻断同轮缓存；其余研究输入/配置仍绑定。
   每次重试要取得独立预留；仅明确429/5xx在设置的次数内可重试。
   未知调用不自动重发；用户新建重试会重置本地预算并可能再次付费。
   费用为用户单价估算，不是供应商账户硬限额；真实联测待凭据/网络。
@@ -553,3 +555,80 @@ stop
 ```
 
 停止和所有权异常沿用工作进程退出路径，不保存不完整的成功账本。重启将未完成任务标为中断；显式重试创建新任务。合成示例、真实来源声明和未调整分红/公司行动的限制保留在报告与导出中。
+
+
+## 12. 开发期因子诊断与AI反馈（009）
+
+```plantuml
+@startuml flow_factor_diagnostics
+skinparam defaultFontName Noto Sans CJK SC
+title 诊断、审计与模型反馈边界
+start
+if (调用来源？) then (页面)
+  :选择成功开发实验、因子、分组数;
+  :提交diagnostic任务，检查引擎/停止/所有权;
+else (AI工具)
+  :验证会话内实验与因子范围\n固定快照、持有期、费用、目标与引擎;
+endif
+if (相同请求与引擎已有报告？) then (是)
+  :返回不可变缓存，不增加收益实验数;
+else (否)
+  :从源快照截除最终留出\n只保留源实验的非重叠成熟测试信号窗;
+  while (还有测试信号窗？) is (是)
+    :用截至信号日的输入算各因子分值\n下一月入场、到期退出、扣固定往返费用;
+    :缺失/公式错误整截面拒算并记原因\n成功截面记录覆盖、平均秩IC与分组净收益;
+    :同分不拆组，常数/空组为null;
+  endwhile (否)
+  :按年/测试块汇总，逐对在共同有效窗算相关\n保留有效窗数，不作显著性或组合增量结论;
+  :保存成功报告或计算失败记录;
+endif
+:单个只读事务统计实验与已消费候选\n合并事件/pending/outcomes，按会话+轮次去重;
+if (输出给模型？) then (是)
+  :只取同协议尝试计数与会话内诊断\n基线/当前最佳和每轮成功候选均可附摘要;
+  :API字段白名单裁剪，无原始行情/逐股收益/最终留出\n请求前仍预留原调用与上下文预算;
+  :提出后续假设或停止\n不改变原准入，不自动启用;
+else (页面)
+  :展示/导出报告与全目录或同协议试验记录\n保留失败、重放、重复和未完成，提示选择偏差;
+endif
+stop
+@enduml
+```
+
+
+## 13. 页面异步响应与当前任务（010）
+
+```plantuml
+@startuml flow_async_views
+skinparam defaultFontName Noto Sans CJK SC
+title 诊断 / 组合页：迟到响应不能覆盖当前任务
+actor 研究者 as user
+participant "页面" as page
+participant "TaskWatcher" as watcher
+participant "本地HTTP服务" as api
+user -> page : 提交A
+page -> watcher : start，观察版本递增
+watcher -> api : 提交并取得job A
+watcher -> api : GET A，记录轮询序号
+user -> page : 提交B / 新建重试
+page -> watcher : start，观察版本递增，禁用旧控制
+watcher -> api : 提交并取得job B
+watcher -> api : GET B，记录新序号
+api --> watcher : 迟到的A响应
+watcher -> watcher : 观察版本不符，丢弃
+api --> watcher : 当前B状态
+watcher -> page : 仅渲染B及其控制按钮
+watcher -> api : GET B，旧轮询尚未返回
+user -> page : 取消当前任务
+page -> watcher : cancel，固定捕获job B
+watcher -> api : POST control(B)，再查询新状态
+api --> watcher : B cancelled，最新轮询序号
+watcher -> page : 显示取消，禁用控制
+api --> watcher : 迟到的B旧状态
+watcher -> watcher : 序号已过期，丢弃
+note over page, watcher
+  完成后刷新列表/报告也校验当前观察版本和序号。
+  研究室详情单独采用请求序号+所选ID防护。
+  试验范围加载有独立序号与选择核对，加载期禁导出旧数据。
+end note
+@enduml
+```

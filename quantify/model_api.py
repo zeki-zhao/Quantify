@@ -104,6 +104,16 @@ def api_limits(value=None):
     return result
 
 
+def compact_diagnostic(diagnostic):
+    report = diagnostic.get('report', {})
+    safe_diagnostic = {key: report[key] for key in ('status', 'experiment_id', 'is_demo', 'return_basis', 'note') if key in report}
+    summary_keys = ('windows','scored_windows','ic_windows','constant_or_undefined_ic','score_coverage','input_coverage','mean_rank_ic','rank_ic_std','positive_ic_fraction','mean_high_minus_low','spread_windows')
+    safe_diagnostic['factors'] = [dict(factor_id=f['factor_id'],summary={key:f['summary'][key] for key in summary_keys if key in f['summary']}) for f in report.get('factors', [])]
+    safe_diagnostic['correlations'] = [{key:r[key] for key in ('left_id','right_id','common_scored_windows','valid_windows','mean_rank_correlation') if key in r} for r in report.get('correlations', [])]
+    safe_diagnostic['trial_counts'] = {key:diagnostic.get('trial_counts', {}).get(key) for key in ('experiments','repeated_experiments','sessions','proposals_consumed','unique_valid_formulas','invalid_formulas','repeated_proposals','proposal_statuses')}
+    return safe_diagnostic
+
+
 def compact_context(context, feedback, goal):
     """Explicit development-only fields, freshly rebuilt after each evaluated proposal."""
     baseline = context['baseline']
@@ -115,7 +125,11 @@ def compact_context(context, feedback, goal):
                for factor in context['factors']]
     history = [{key: outcome[key] for key in ('round', 'proposal', 'status', 'selected', 'decision', 'baseline_decision', 'error')
                 if key in outcome} for outcome in feedback]
-    return dict(goal=goal, objective=context['objective'], baseline=base, data=context['data'], factors=factors,
+    for row, outcome in zip(history, feedback):
+        if 'diagnostics' in outcome:
+            row['diagnostics'] = compact_diagnostic(outcome['diagnostics'])
+    safe_diagnostic = compact_diagnostic(context.get('diagnostics', {}))
+    return dict(goal=goal, objective=context['objective'], baseline=base, data=context['data'], factors=factors, diagnostics=safe_diagnostic,
                 formula_language=context['formula_language'], proposal_schema=PROPOSAL_SCHEMA, feedback=history,
                 limitations=['仅开发窗统计，最终留出结果不可用。', '多轮择优有选择偏差，不能证明真实效果。'])
 
@@ -130,6 +144,20 @@ def request_body(config, package, limits):
                     text={'format': {'type': 'json_schema', 'name': 'factor_proposal', 'strict': True, 'schema': PROPOSAL_SCHEMA}})
     return dict(model=config['model'], messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': content}],
                 response_format={'type': 'json_object'}, max_tokens=limits['max_output_tokens'], stream=False)
+
+
+def request_without_live_counts(provider, request):
+    """Only current census counts are volatile; all research inputs remain bound."""
+    result = json.loads(canonical(request))
+    try:
+        message = result['input'][0] if provider == 'openai' else result['messages'][1]
+        package = json.loads(message['content'])
+        if isinstance(package.get('diagnostics'), dict):
+            package['diagnostics'].pop('trial_counts', None)
+        message['content'] = canonical(package)
+    except (KeyError, IndexError, TypeError, ValueError):
+        raise ModelError('context_changed', '已有模型请求格式不匹配，拒绝复用或重发') from None
+    return result
 
 
 class NoRedirect(HTTPRedirectHandler):

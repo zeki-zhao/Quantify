@@ -7,6 +7,7 @@ from .objectives import assess
 from .model_calls import APIProposalProvider
 from .model_api import ModelError
 from .portfolio_service import PortfolioService
+from .diagnostics_service import DiagnosticService
 
 from .jobs import JobStore, LostLease
 from .proposals import ManualProposalProvider
@@ -113,6 +114,11 @@ def run_research(store, job, owner):
                     progress['no_improvement'] = 0
                 else:
                     progress['no_improvement'] += 1
+            if result['status'] == 'completed':
+                try:
+                    outcome['diagnostics'] = tools.call('get_factor_diagnostics', experiment_id=result['id'])
+                except (ValueError, TypeError) as exc:
+                    outcome['diagnostics'] = {'report': {'status': 'failed', 'note': '诊断不可用；不改变原准入政策'}, 'error': str(exc)}
             if pending.get('normalized'):
                 progress['seen'].append(pending['normalized'])
         except (ValueError, TypeError) as exc:
@@ -132,6 +138,16 @@ def execute(directory, job_id, owner):
     try:
         if job['kind'] == 'research':
             run_research(store, job, owner)
+        elif job['kind'] == 'diagnostic':
+            if job['payload']['engine'] != engine_fingerprint():
+                raise ValueError('诊断排队后引擎改变，请重新提交')
+            def checkpoint(progress):
+                if store.job(job_id)['stop_requested']:
+                    raise StopRequested()
+                store.checkpoint(job_id, owner, progress)
+            result = DiagnosticService(Workbench(directory)).run(**job['payload']['request'], checkpoint=checkpoint)
+            store.finish(job_id, owner, 'succeeded' if result['status']=='completed' else 'failed',
+                         result={'diagnostic_id': result['id']}, error=result.get('error'))
         elif job['kind'] == 'portfolio':
             if job['payload']['engine'] != engine_fingerprint():
                 raise ValueError('组合排队后引擎改变，请重新提交')

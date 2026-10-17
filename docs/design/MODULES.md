@@ -4,7 +4,7 @@
 
 ## 1. C4 Level 3：应用编排组件
 
-`Handler` 按路由选择服务，`Lab` 负责组装工作台、生命周期、组合、队列和行情服务；图中的编排关系不表示这些服务所有请求都必须依次经过 Lab 的业务方法。
+`Handler` 按路由选择服务，`Lab` 负责组装工作台、生命周期、组合、诊断、队列和行情服务；图中的编排关系不表示这些服务所有请求都必须依次经过 Lab 的业务方法。
 
 ```plantuml
 @startuml c4_components
@@ -20,6 +20,7 @@ Container_Boundary(app, "应用主进程 / app.py") {
   Component(handler, "Handler", "app.py", "静态资源、JSON 边界、路由、同步请求计算锁")
   Component(lab, "Lab", "lab.py", "会话、模型配置、协作包、任务提交与服务组装")
   Component(wb, "Workbench", "workbench.py", "数据/因子操作、实验、比较与复现")
+  Component(diagnostics, "DiagnosticService", "diagnostics_service.py", "开发窗诊断/缓存、队列、跨会话试验统计")
   Component(portfolio, "PortfolioService", "portfolio_service.py", "组合版本、输入与开发边界校验、回放任务")
   Component(lifecycle, "Lifecycle", "lifecycle.py", "冻结、最终验证、研究版本与前向标签")
   Component(queue, "QueueManager", "jobs.py / 后台线程", "单所有者领取任务、启动/终止子进程")
@@ -29,6 +30,10 @@ Container_Boundary(app, "应用主进程 / app.py") {
 Rel(web, handler, "请求", "HTTP")
 Rel(handler, wb, "/api/workspace/*")
 Rel(handler, lab, "/api/lab/*")
+Rel(handler, diagnostics, "/api/diagnostics/*")
+Rel(lab, diagnostics, "持有服务实例")
+Rel(diagnostics, db, "固定请求 / 结果 / 只读试验统计")
+Rel(diagnostics, queue, "通过 JobStore 提交 diagnostic 任务")
 Rel(handler, portfolio, "/api/portfolio/*")
 Rel(handler, lifecycle, "/api/strategies/*")
 Rel(handler, market, "/api/market/*")
@@ -63,10 +68,11 @@ SHOW_LEGEND()
 | 行情编排 | `market.py` | 配置/日期/股票 → 报价缓存或 history 任务 | 旧好报价保留；时间倒退与过期提示；每日意图先持久化再提交 |
 | 因子与公式 | `factors.py`、`expressions.py` | 因子定义 + 历史面板 → 截面分值 | 版本不可变；窗口只看过去；AST 白名单及复杂度/数值边界 |
 | 研究计算 | `research.py` | 开发面板、因子、费用、目标 → 分窗单笔统计 | 标签成熟、延迟入场、共同窗口；固定池，不核算组合资金 |
+| 因子诊断 | `diagnostics.py`、`diagnostics_service.py`、`trial_audit.py` | 固定开发实验/因子 → 诊断、重复/尝试计数 | 截除留出，同信号窗；并列/常数/缺失可见；模型摘要受作用域与白名单限制 |
 | 组合回放 | `portfolio_service.py`、`portfolio.py` | 版本/日线/状态 → 双账本/净值/成交 | 仅开发窗；信号股数冻结、整手/T+1、FIFO对账；不继承最终准入 |
 | 目标政策 | `objectives.py` | 候选/参照统计 + policy → checks/reasons | 训练替换、研究准入、最终验收共用 `assess` |
 | 工作台服务 | `workbench.py` | 固定快照/因子/协议 → experiment、比较、复现 | 切除留出期后计算；成功与失败留档；比较必须同协议；复现须同引擎 |
-| 持久化任务 | `jobs.py`、`worker.py` | experiment/research/history/portfolio → 状态、进度、结果 | 单队列所有者；工作进程检查 owner；接受停止请求后不能被成功覆盖 |
+| 持久化任务 | `jobs.py`、`worker.py` | experiment/research/history/portfolio/diagnostic → 状态、进度、结果 | 单队列所有者；工作进程检查 owner；接受停止请求后不能被成功覆盖 |
 | 模型API | `model_api.py`、`model_calls.py` | 开发摘要 → 提案/用量/调用台账 | 固定HTTPS端点、环境密钥、每次调用先预留、未知结果不静默重发 |
 | AI 协作 | `lab.py`、`research_tools.py`、`proposals.py` | 开发摘要/JSON 提案 → 因子、实验、反馈、建议 | 手动/API共用会话范围内工具；无原始行情/最终收益工具；预算；不启用版本 |
 | 研究生命周期 | `lifecycle.py` | 开发实验/追加快照/人工决定 → freeze/final/strategy/signal/label | 暴露预留、人工生效、未来入场、成熟与非重叠统计 |
@@ -88,6 +94,7 @@ package "应用编排" {
   component "Workbench\nworkbench.py" as wb
   component "ResearchTools\nresearch_tools.py" as tools
   component "Lifecycle\nlifecycle.py" as lifecycle
+  component "DiagnosticService / 试验审计\ndiagnostics_service.py / trial_audit.py" as diag
 }
 package "数据 / 纯计算" {
   component "CSV 校验 / 月度转换\ndatasets.py" as datasets
@@ -103,6 +110,9 @@ wb --> research : 仅开发区间
 wb --> factors : 固定定义
 wb --> store : 保存实验 / 读取版本
 tools --> wb : 固定协议运行和比较
+tools --> diag : 会话内开发诊断摘要
+diag --> factors : 固定信号分值
+diag --> store : 不可变诊断 / 只读试验元数据
 tools --> expression : 提案公式校验
 lifecycle --> research : 复用面板解析与统计
 lifecycle --> factors : 固定因子截面计算
@@ -153,7 +163,7 @@ end note
 
 | 表 | 性质 | 用途 |
 | --- | --- | --- |
-| `artifacts` | 不可变正文，JSON | snapshot、factor、experiment、research_proposal、freeze、final_evaluation、strategy、forward_signal、forward_label、portfolio_spec、portfolio_run |
+| `artifacts` | 不可变正文，JSON | snapshot、factor、experiment、research_proposal、freeze、final_evaluation、strategy、forward_signal、forward_label、portfolio_spec、portfolio_run、diagnostic |
 | `jobs` / `job_events` | 可变进度 + 追加日志 | 任务预算、所有权、提案、检查点、停止请求和审计 |
 | `model_settings` / `model_calls` | 可变非密配置 + 调用台账 | 模型/单价冻结到任务，按job/round/attempt预留和结算；不存密钥 |
 | `market_state` / `market_quotes` | 可变状态 | 设置、最新有效报价、失败、下载指针及每日调度意图 |
@@ -228,6 +238,13 @@ entity "portfolio_run" as pr {
   * id
   spec_id / status / report / error
 }
+entity "diagnostic" as diag {
+  * id = request + engine digest
+  request / engine / status
+  report / error
+}
+experiment ||--o{ diag : 同开发测试信号窗
+factor }|--o{ diag : 固定定义
 experiment ||--o{ ps : 开发来源
 factor ||--o{ ps : 固定因子
 snapshot ||--o{ ps : 月度 / 日线 / 执行状态
@@ -247,7 +264,7 @@ snapshot ||--o{ label : 成熟计算快照
 
 ## 5. 任务与恢复设计
 
-四类持久化任务为 `experiment`、`research`、`history`、`portfolio`。只有 research 可以暂停/继续；所有类型均可取消。等待人工输入与暂停不累计计算时间；已结算的各段进程运行时间跨暂停保留。
+五类持久化任务为 `experiment`、`research`、`history`、`portfolio`、`diagnostic`。只有 research 可以暂停/继续；所有类型均可取消。等待人工输入与暂停不累计计算时间；已结算的各段进程运行时间跨暂停保留。
 
 ```plantuml
 @startuml job_states
@@ -362,3 +379,47 @@ end note
 ```
 
 字段、限制和精确指标口径见[组合回放](../PORTFOLIO.md)。`execution` 是用户提供的开盘前声明，当前网页日线下载不会自动生成可靠状态；交易日历、公司行动、退市和盘口仍待覆盖。
+
+
+## 9. 因子诊断与跨会话统计（009）
+
+```plantuml
+@startuml diagnostic_modules
+skinparam defaultFontName Noto Sans CJK SC
+skinparam componentStyle rectangle
+title 开发期诊断、试验审计与模型摘要
+component "因子诊断页 /diagnostics" as web
+component "DiagnosticService\n固定源实验 / 请求 / 引擎 / 缓存" as service
+component "diagnostic工作进程\n取消 / 超时 / 所有权" as worker
+component "diagnostics.analyze\n覆盖 / Rank IC / 分组\n时期稳定性 / 成对相关" as calc
+component "trial_audit\n单次读事务 / 会话轮次去重" as audit
+component "ResearchTools\n会话内实验与因子作用域" as tools
+component "聚合摘要 / API字段白名单\ncompact_report / compact_diagnostic" as compact
+cloud "OpenAI / DeepSeek API\n或手动协作包" as model
+database "SQLite\n开发实验 / 因子 / diagnostic\njobs / job_events" as db
+web --> service : 提交 / 查看 / 复现
+service --> worker : 固定请求
+worker --> calc : 仅开发测试信号窗
+service --> db : 不可变报告
+calc --> service : 指标 / 样本 / 缺失原因
+web --> audit : 全目录或同协议计数
+audit --> db : 只读实验元数据 / 进度 / 已消费事件
+tools --> service : 基线 / 当前最佳 / 每轮候选摘要
+tools --> audit : 仅同协议汇总计数
+tools --> compact : 开发聚合结果
+compact --> model : 无原始行情 / 逐股分数收益 / 留出
+note bottom of calc
+  并列平均秩，同分不拆组
+  常数 / 空组为null；不提供显著性或组合增量
+end note
+@enduml
+```
+
+`diagnostic` ID由固定请求及引擎生成，正文不可覆盖，同请求返回缓存。跨会话台账是带as_of的即时读结果，不是新的收益实验；研究工具仅取同协议聚合计数，不导出外会话个别指标。详细统计与重复定义见[因子诊断](../FACTOR_DIAGNOSTICS.md)。
+
+
+## 10. 自查修复的恢复与页面边界（010）
+
+- 模型同轮复用比较：只忽略当前 `diagnostics.trial_counts`，其余请求、模型配置和预算全部保持绑定；成功响应复用缓存，不发HTTP。明确可重试失败仍按原存储请求重试，每次独立预留；unknown不重发。原始请求/hash审计不改写。
+- `static/task_watcher.js` 是诊断/组合页共享的浏览器组件：观察版本区分新提交/重试，轮询序号区分同任务并发请求；只有当前响应能渲染状态、完成报告及按钮。研究室详情独立按请求序号和所选ID防护。
+- 诊断因子选项在同源实验刷新时保留，切换源实验时重新默认。试验范围查询独立递增序号，并同时核对当前范围/实验；加载期清空旧值、禁导出，避免界面与导出错配。见[异步流程](FLOWS.md#13-页面异步响应与当前任务010)。

@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-16",
+  "data": "synthetic_only",
+  "before": {
+    "model_resume": "failed: 已记录调用的上下文或配置改变，拒绝静默重发",
+    "changed_context_field": "diagnostics.trial_counts.sessions",
+    "browser_failures": [
+      "diagnostics old poll overwrites new task",
+      "portfolio old poll overwrites new task",
+      "refresh clears extra factor selection",
+      "old census response mismatches selected scope",
+      "lab old same-task response overwrites cancelled status"
+    ]
+  },
+  "after": {
+    "model_providers": [
+      "openai",
+      "deepseek"
+    ],
+    "cached_success": "one recorded call, no additional HTTP request",
+    "resumed_retry": "two reserved attempts, identical original request including census snapshot",
+    "research_inputs_guard": "changed goal/metrics still rejected",
+    "controlled_browser_scenarios": 7,
+    "unit_integration_tests": 126,
+    "spearman_closed_form_cases": 1800
+  },
+  "limits": [
+    "No real market or paid-model calls",
+    "No claim of whole-program formal verification"
+  ]
+}

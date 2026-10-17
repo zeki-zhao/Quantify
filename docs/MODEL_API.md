@@ -99,3 +99,12 @@ API任务暂停后有待执行内容时恢复为queued，不会误入手动waiti
 | token预留不足 | 上下文可能较大，核对本地预留与总预算，不通过关闭记录绕过预算 |
 
 真实联测需各自有效Key、API账户额度/权限和可访问的网络。官方协议参考：[OpenAI Responses](https://platform.openai.com/docs/api-reference/responses/create)、[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion)。本次未成功访问这两个文档站点，也没有发起真实付费API调用；示例响应和测试用量均为明确合成。
+
+迭代009自动附[开发期因子诊断](FACTOR_DIAGNOSTICS.md)：基线/当前最佳及每轮成功候选反馈含覆盖、Rank IC、高低组差、成对相关和同协议尝试计数。只发送聚合白名单，不发送逐股分值/收益、原始行情、最终留出结果或其他会话个别指标。新增上下文仍遵守原预留预算，超限会停止；诊断不改动原准入。
+
+
+## 010：动态试验计数与暂停恢复
+
+同协议的其他会话或实验会改变当前 `diagnostics.trial_counts`。恢复同一job/round已有调用时，仅该当前聚合计数不参与请求一致性比较；目标、基线、定义、指标、历史反馈、模型、参数及预算仍须一致。已成功的提案复用原记录，不新发HTTP；明确可重试失败沿用已记录的原始完整请求（含原计数快照），每次尝试仍单独预留。不会把刷新后的统计混入旧请求，也不会覆盖原始请求/hash审计。
+
+reserved/unknown仍禁止重发；配置或研究输入改变仍拒绝复用。这个规则不允许跨job/round重用提案。010更新引擎指纹，旧引擎实验/任务仍遵守原版本限制，不能靠此修复跨版本续跑。

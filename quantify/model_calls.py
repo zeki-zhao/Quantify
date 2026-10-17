@@ -5,7 +5,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from .model_api import ModelError, ModelHTTP, compact_context, credential, decode_response, request_body
+from .model_api import ModelError, ModelHTTP, compact_context, credential, decode_response, request_body, request_without_live_counts
 from .storage import canonical, digest
 
 
@@ -125,8 +125,13 @@ class APIProposalProvider:
         records = [row for row in self.calls.records(self.job_id) if row['round'] == round_number]
         if records:
             latest = records[-1]
-            if latest['request_sha256'] != digest(request) or latest['config'] != self.config:
+            same_request = (latest['request_sha256'] == digest(request) or
+                            request_without_live_counts(self.config['provider'], latest['request']) ==
+                            request_without_live_counts(self.config['provider'], request))
+            if not same_request or latest['config'] != self.config:
                 raise ModelError('context_changed', '已记录调用的上下文或配置改变，拒绝静默重发')
+            # A resumed retry uses the exact original request, including its census snapshot.
+            request = latest['request']
             if latest['status'] == 'succeeded':
                 return latest['proposal']
             if latest['status'] in ('reserved', 'unknown'):

@@ -4,6 +4,7 @@
 
 - [概要设计](design/README.md)：PlantUML C4 拓扑、主要模块架构及关键操作流程。
 - [构建计划](BUILD_PLAN.md)：产品架构、真实数据接入顺序、因子迭代设计、里程碑和验收标准。
+- [因子诊断](FACTOR_DIAGNOSTICS.md)：开发期IC/分组/稳定性/相关性、跨会话尝试与AI摘要。
 - [组合回放](PORTFOLIO.md)：现金、持仓、月度调仓、显式状态、费用、双账本净值与开发边界。
 - [数据契约](DATA_CONTRACTS.md)：CSV 字段、价格口径、财务时点、增量与备份。
 - [最终验证与研究版本](VALIDATION_LIFECYCLE.md)：结构化目标、冻结暴露台账、人工更替/回滚及成熟标签。

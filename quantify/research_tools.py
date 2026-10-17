@@ -1,5 +1,7 @@
 """Scoped research tools: fixed baseline/data/protocol, with no holdout-row tool."""
 from . import factors
+from .diagnostics_service import DiagnosticService
+from .trial_audit import audit_trials
 from .expressions import GRAMMAR, validate_expression, evaluate_expression
 from .proposals import PROPOSAL_SCHEMA
 from .research import parse_panel
@@ -7,7 +9,7 @@ from .workbench import Workbench, engine_fingerprint
 
 TOOL_NAMES = ('get_research_context', 'list_factors', 'get_factor_version', 'validate_factor',
               'create_factor_candidate', 'run_experiment', 'get_experiment_result', 'compare_runs',
-              'propose_strategy_update')
+              'propose_strategy_update', 'get_factor_diagnostics')
 
 
 def summarize(experiment):
@@ -72,11 +74,26 @@ class ResearchTools:
                         [key for key in ('quality', 'value') if all(row[key] is not None for month in panel for row in month.values())]},
             'factors': self._list_factors(), 'formula_language': GRAMMAR, 'proposal_schema': PROPOSAL_SCHEMA,
             'objective': self.baseline['request']['objective'],
+            'diagnostics': self._get_factor_diagnostics(self.progress['best_id']),
             'selection_note': '相同目标同时用于训练和候选准入；无合格替代者时保留候选列表首个基线。不是组合回测。',
             'limitations': ['只发送开发窗指标，不发送原始行情或留出期收益。',
                             '固定股票池可能有幸存者偏差，多轮候选比较不等于独立最终验证。',
                             '提案来自手动输入或固定模型API；效果仅由本地引擎检验，模型不能启用版本。'],
         }
+
+    def _get_factor_diagnostics(self, experiment_id, factor_ids=None):
+        experiment = self._scoped_experiment(experiment_id)
+        if factor_ids is None:
+            factor_ids = list(dict.fromkeys([self.baseline['request']['factor_ids'][0], experiment['request']['factor_ids'][0]]))
+        if not isinstance(factor_ids, list) or not 1 <= len(factor_ids) <= 10:
+            raise ValueError('诊断需1至10个会话内因子')
+        for factor_id in factor_ids:
+            self._get_factor_version(factor_id)
+        service = DiagnosticService(self.workbench)
+        from .diagnostics import compact_report
+        artifact = service.run(experiment_id=experiment_id, factor_ids=factor_ids)
+        return dict(report=compact_report(artifact), trial_counts=audit_trials(self.store, experiment_id)['counts'],
+                    note='仅当前固定协议的试验计数；非独立样本量。高相关不证明组合增量。')
 
     def _list_factors(self):
         return [self.store.get('factor', factor_id) for factor_id in self.progress['factor_ids']]
