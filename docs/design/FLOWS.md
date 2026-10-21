@@ -685,3 +685,49 @@ note over Caller, Calc
 end note
 @enduml
 ```
+
+
+## 15. 组合冻结、独立最终回放与人工更替（012）
+
+```plantuml
+@startuml portfolio_validation_flow
+skinparam defaultFontName Noto Sans CJK SC
+title 组合独立验收与人工版本生命周期
+actor 研究者 as User
+participant "页面 / PortfolioLifecycle" as Service
+participant "队列工作进程" as Worker
+participant "共享exposures.reserve" as Exposure
+participant "固定区间输入 / 组合账本" as Ledger
+participant "组合政策" as Policy
+database SQLite as DB
+User -> Service : 已成功开发回放 / 参照 / 准入政策
+Service -> DB : 冻结完整规则、数据、原调仓相位和端点
+User -> Service : 提交最终验收
+Service -> Worker : portfolio_validation(freeze_id, engine)
+Worker -> DB : 查询不可变最终报告
+alt 已有完整结果
+  DB --> Worker : 成功或失败缓存；不再计算
+else 首次验收
+  Worker -> Exposure : 预留股票/完整最终区间
+  Exposure -> DB : BEGIN IMMEDIATE
+  Exposure -> DB : 核对单笔/组合历史暴露及已知开发暴露
+  Exposure -> DB : 插入portfolio:freeze_id，COMMIT
+  Worker -> Ledger : 按冻结边界从现金开始回放
+  Ledger -> Ledger : 原调仓相位 / 下一观察点开盘 / 固定成本
+  Ledger --> Policy : 候选与冻结参照净值、完整共同周期
+  Policy --> Worker : 严格目标 + 收益/回撤/尾部/样本约束
+  Worker -> DB : 完整不可变报告；accepted还需独立性
+end
+Worker -> DB : 任务成功交付报告（不等于准入通过）
+Worker --> Service : 最终证据；不进入AI反馈
+User -> Service : 人工启用 / 替换 / 回滚 / 退役，带理由及expected_active
+Service -> DB : 核对独立通过、引擎、交付、当前版本和回滚历史
+Service -> DB : 追加实际生效时间与前后版本
+Service --> User : 当前组合研究引用及事件
+note over Worker, DB
+  失败/取消/中断保留暴露；无结果不得同冻结重算
+  已提交报告但任务取消时，须成功交付缓存后才可启用
+  不迁移历史持仓，不自动生成前向账本或交易
+end note
+@enduml
+```

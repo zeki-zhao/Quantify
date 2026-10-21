@@ -4,6 +4,7 @@ from .objectives import policy
 from .model_api import ModelSettings, api_limits, credential
 from .market import MarketService
 from .portfolio_service import PortfolioService
+from .portfolio_lifecycle import PortfolioLifecycle
 from .diagnostics_service import DiagnosticService
 from .increment_service import IncrementService
 from .lifecycle import Lifecycle
@@ -28,6 +29,7 @@ class Lab:
         self.store = self.queue.store
         self.models = ModelSettings(self.store)
         self.portfolio = PortfolioService(self.workbench, self.store)
+        self.portfolio_lifecycle = PortfolioLifecycle(self.workbench, self.store)
         self.diagnostics = DiagnosticService(self.workbench, self.store)
         self.increments = IncrementService(self.workbench, self.store)
         self.market = MarketService(directory, self.store)
@@ -146,7 +148,7 @@ class Lab:
                     'formula_language': GRAMMAR, 'proposal_schema': PROPOSAL_SCHEMA}
         if path == '/api/lab/jobs':
             return [{key: value for key, value in job.items() if key not in ('payload', 'progress', 'owner')}
-                    | {'goal': job['payload'].get('goal', '因子增量评估' if job['kind'] == 'increment' else '历史日线下载' if job['kind'] == 'history' else '组合回放' if job['kind'] == 'portfolio' else '因子诊断' if job['kind'] == 'diagnostic' else '单次因子实验')}
+                    | {'goal': job['payload'].get('goal', '组合最终验收' if job['kind'] == 'portfolio_validation' else '因子增量评估' if job['kind'] == 'increment' else '历史日线下载' if job['kind'] == 'history' else '组合回放' if job['kind'] == 'portfolio' else '因子诊断' if job['kind'] == 'diagnostic' else '单次因子实验')}
                     for job in self.store.jobs()]
         prefix = '/api/lab/jobs/'
         if path.startswith(prefix):

@@ -4,7 +4,7 @@
 
 ## 1. C4 Level 3：应用编排组件
 
-`Handler` 按路由选择服务，`Lab` 负责组装工作台、生命周期、组合、诊断、增量、队列和行情服务；图中的编排关系不表示这些服务所有请求都必须依次经过 Lab 的业务方法。
+`Handler` 按路由选择服务，`Lab` 负责组装工作台、生命周期、组合、组合生命周期、诊断、增量、队列和行情服务；图中的编排关系不表示这些服务所有请求都必须依次经过 Lab 的业务方法。
 
 ```plantuml
 @startuml c4_components
@@ -20,6 +20,7 @@ Container_Boundary(app, "应用主进程 / app.py") {
   Component(handler, "Handler", "app.py", "静态资源、JSON 边界、路由、同步请求计算锁")
   Component(lab, "Lab", "lab.py", "会话、模型配置、协作包、任务提交与服务组装")
   Component(wb, "Workbench", "workbench.py", "数据/因子操作、实验、比较与复现")
+  Component(plifecycle, "PortfolioLifecycle", "portfolio_lifecycle.py", "冻结/专门政策、最终队列、人工更替")
   Component(increments, "IncrementService", "increment_service.py", "固定多因子、同窗添加/移除与引用、AI摘要")
   Component(diagnostics, "DiagnosticService", "diagnostics_service.py", "开发窗诊断/缓存、队列、跨会话试验统计")
   Component(portfolio, "PortfolioService", "portfolio_service.py", "组合版本、输入与开发边界校验、回放任务")
@@ -31,6 +32,10 @@ Container_Boundary(app, "应用主进程 / app.py") {
 Rel(web, handler, "请求", "HTTP")
 Rel(handler, wb, "/api/workspace/*")
 Rel(handler, lab, "/api/lab/*")
+Rel(handler, plifecycle, "/api/portfolio-validation/*")
+Rel(lab, plifecycle, "持有服务实例")
+Rel(plifecycle, db, "portfolio_freeze / portfolio_evaluation / 事件 / 共享暴露")
+Rel(plifecycle, queue, "通过 JobStore 提交 portfolio_validation 任务")
 Rel(handler, increments, "/api/increments/*")
 Rel(lab, increments, "持有服务实例")
 Rel(increments, db, "factor / factor_increment / 引用")
@@ -72,6 +77,7 @@ SHOW_LEGEND()
 | 在线适配 | `market_providers.py` | 固定 HTTPS 响应 → 规范化报价/日线 | 新浪 GBK 严格解析、东财 JSON/单位转换；响应脚本不执行；有限重试 |
 | 行情编排 | `market.py` | 配置/日期/股票 → 报价缓存或 history 任务 | 旧好报价保留；时间倒退与过期提示；每日意图先持久化再提交 |
 | 因子与公式 | `factors.py`、`expressions.py` | 因子定义 + 历史面板 → 截面分值 | 版本不可变；窗口只看过去；AST 白名单及复杂度/数值边界 |
+| 组合最终验证 | `portfolio_lifecycle.py`、`portfolio_policy.py`、`exposures.py` | 完整冻结+留出 → 现金起步账本/政策与人工事件 | 与单笔共用预留；检查开发暴露；最终结果不进入AI |
 | 多因子增量 | `factors.py`、`increments.py`、`increment_service.py` | 固定版本/权重与开发窗 → 配对/移除报告、引用 | 不嵌套；Fraction权重；整窗配对拒算；不是净值归因 |
 | 研究计算 | `research.py` | 开发面板、因子、费用、目标 → 分窗单笔统计 | 标签成熟、延迟入场、共同窗口；固定池，不核算组合资金 |
 | 因子诊断 | `diagnostics.py`、`diagnostics_service.py`、`trial_audit.py` | 固定开发实验/因子 → 诊断、重复/尝试计数 | 截除留出，同信号窗；并列/常数/缺失可见；模型摘要受作用域与白名单限制 |
@@ -320,7 +326,7 @@ end note
 
 恢复不会把 interrupted 直接改回 queued。失败、取消、超时或中断后，显式重试创建新记录，以 `retry_of` 关联旧任务并重置预算。暂停继续会复用已经提交的确定轮次实验；pending 检查点保留因子、阶段及实验编号。
 
-最终验收和前向更新当前是同步服务，不享有上述队列暂停/取消/运行时限机制；代码升级后必须通过引擎检查，不得混用旧冻结方案继续计算。
+原单笔最终验收及手动前向接口仍为同步服务；012组合最终验收使用队列。代码升级需通过引擎检查，不得混用旧冻结方案。
 
 ## 6. 主要保护与扩展接口
 
@@ -466,3 +472,42 @@ end note
 `blend`以完整成分定义及ID保存引用，排序按ID规范化；显示权重与精确有理数同时存储。`factor_increment`固定请求+引擎摘要标识，复现返回缓存并新增队列历史。`increment`为第六类队列任务，沿用取消/超时/重试/启动中断，不支持暂停。跨会话统计另计报告和任务，AI候选实验仍归原收益实验，不能相加声称独立样本。
 
 `augment`每轮对固定原基线增加一个新公式，占比在会话创建时冻结；不是累加当前最佳成分。固定组合实验与增量报告指标/覆盖核对后，继续按原目标与额外约束相对当前最佳及原基线判断。版本引用涵盖组合成分、派生版本、实验、冻结的目标/参照、组合版本和增量报告；无历史覆盖。详见[操作与统计口径](../FACTOR_INCREMENTS.md)。
+
+
+## 12. 组合最终验证与共享暴露（012）
+
+```plantuml
+@startuml portfolio_validation_components
+skinparam defaultFontName Noto Sans CJK SC
+title 组合最终验收、独立性与人工版本
+component "组合验证页\nTaskWatcher / 报告请求序号" as web
+component "PortfolioLifecycle\n冻结 / 缓存 / 人工事件" as lifecycle
+component "QueueManager / worker\nportfolio_validation" as worker
+component "PortfolioService._inputs\n显式冻结区间 / 原调仓相位" as inputs
+component "portfolio.simulate\n纯现金起步 / 日线执行账本" as ledger
+component "portfolio_policy\n同端点完整周期 / 收益回撤 / 样本" as policy
+component "exposures.reserve\nBEGIN IMMEDIATE / 计算前预留" as exposures
+component "单笔Lifecycle\n原最终验证" as single
+database "SQLite\nportfolio_freeze / portfolio_evaluation\nportfolio_lifecycle_events\nfinal_exposures / experiment" as db
+web --> lifecycle : 冻结 / 提交 / 查看 / 人工更替
+lifecycle --> worker : 固定冻结编号及引擎
+worker --> lifecycle : evaluate / checkpoint
+lifecycle --> exposures : 留出范围 / 股票集合
+single --> exposures : 同一暴露台账
+exposures --> db : 预留；核对已知开发区间暴露
+lifecycle --> inputs : 仅固定最终区间，保留历史预热
+inputs --> ledger : 原固定因子/权重/资金/成本
+ledger --> policy : 候选与参照的净值与成交
+policy --> lifecycle : 严格目标 / 风险 / 样本门槛
+lifecycle --> db : 不可变结果；人工事件只追加
+note bottom of lifecycle
+  accepted要求政策通过且本地未重复暴露
+  启用须任务成功交付，expected_active防陈旧更替
+  不传最终结果给AI，不迁移持仓，不自动交易
+end note
+@enduml
+```
+
+冻结以内容摘要验证，嵌入组合/参照/政策及端点；结果按冻结编号不可覆盖。队列取消或中断不撤销已预留暴露；没有完整结果不能重算，有结果只读取缓存。报告已提交但任务被取消时，也需一次显式重试成功交付缓存后才能启用。
+
+原单笔与组合事件表独立，暴露表共享；相交股票/时间无论哪条验证路径都失去后续独立资格。同事务还检查已成功开发实验是否覆盖目标区间。人工组合版本为研究引用，不继承账本持仓；组合前向账本待建设，见[组合规则](../PORTFOLIO_VALIDATION.md)。

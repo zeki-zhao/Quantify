@@ -1,5 +1,4 @@
 """Frozen single-factor validation and manually managed research versions (no orders)."""
-import json
 import uuid
 from contextlib import closing
 from datetime import datetime, timezone, timedelta
@@ -8,6 +7,7 @@ from . import datasets, factors
 from .objectives import assess, policy
 from .research import parse_panel, statistics
 from .storage import canonical
+from .exposures import reserve
 from .workbench import engine_fingerprint
 
 
@@ -87,15 +87,7 @@ class Lifecycle:
         reference = self.store.get('factor', frozen['reference_factor_id']) if frozen['reference_factor_id'] else None
         symbols = sorted({row['symbol'] for row in snapshot['rows']})
         # Reserve exposure BEFORE touching holdout prices; even failed/crashed attempts consume it.
-        with closing(self.store.connect()) as db, db:
-            db.execute('BEGIN IMMEDIATE')
-            previous = db.execute('SELECT freeze_id,start,end,symbols FROM final_exposures').fetchall()
-            if any(row[0] == freeze_id for row in previous):
-                raise ValueError('此冻结版本已开始验收；结果未提交时禁止重新获得独立验收资格')
-            overlaps = [row[0] for row in previous if row[1] <= frozen['data_end'] and row[2] >= frozen['holdout_start']
-                        and set(json.loads(row[3])) & set(symbols)]
-            db.execute('INSERT INTO final_exposures VALUES (?,?,?,?,?)',
-                       (freeze_id, frozen['holdout_start'], frozen['data_end'], canonical(symbols), now().isoformat()))
+        overlaps = reserve(self.store, freeze_id, frozen['holdout_start'], frozen['data_end'], symbols)
         base = dict(freeze_id=freeze_id, independent=not overlaps, previous_exposures=overlaps,
                     is_demo=snapshot['is_demo'], price_basis=snapshot['price_basis'],
                     return_basis='price' if snapshot['kind'] == 'monthly_price' else 'total_return',

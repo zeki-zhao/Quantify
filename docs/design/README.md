@@ -1,8 +1,8 @@
 # Quantify 概要设计
 
-- 文档版本：1.5
+- 文档版本：1.6
 - 更新日期：2026-10-20（Asia/Shanghai）
-- 实现基线：迭代 011 工作树，研究协议 `monthly-walk-forward-v3`；对应[构建计划](../BUILD_PLAN.md)（v12，固定多因子与增量研究）。本次设计文档不改变功能状态。
+- 实现基线：迭代 012 工作树，研究协议 `monthly-walk-forward-v3`；对应[构建计划](../BUILD_PLAN.md)（v13，组合独立验收与人工更替）。本次设计文档不改变功能状态。
 - 适用范围：个人本地量化研究、因子迭代、最终验收与研究版本观察。
 
 ## 1. 文档组织
@@ -30,7 +30,7 @@
 | 可控更替 | 独立验收后人工启用；替换/退役/回滚追加生效事件，保留历史信号 |
 | 轻量本地运行 | Python 3.10+ 标准库、原生 HTML/JS/CSS、SQLite；生产运行无需第三方依赖 |
 
-当前已经实现软件闭环中的手动操作和单笔研究基础。OpenAI与DeepSeek API已接入并通过离线协议/流程验证，真实API联测待凭据与网络。009已补开发期覆盖/IC/分组/时期/成对相关、跨会话试验统计与AI摘要。008已补开发窗组合资金/成交/净值账本，受限执行不代表真实可成交。011补齐多因子版本引用、开发期添加/移除单笔增量与可选AI增量模式。以下能力仍属于规划：组合独立验收与人工更替、自动流水线与组合前向账本、真实前向样本、资金净值归因及权重优化、行业诊断与多重检验校正、真实数据完整覆盖、动态股票池及退市收益、真实公司行动与财务核验。
+当前已经实现软件闭环中的手动操作和单笔研究基础。OpenAI与DeepSeek API已接入并通过离线协议/流程验证，真实API联测待凭据与网络。009已补开发期覆盖/IC/分组/时期/成对相关、跨会话试验统计与AI摘要。008已补开发窗组合资金/成交/净值账本，受限执行不代表真实可成交。011补齐多因子版本引用、开发期添加/移除单笔增量与可选AI增量模式。012补组合独立验收、共享暴露和人工版本更替。以下能力仍属于规划：自动流水线与组合前向账本、真实前向样本、资金净值归因及权重优化、行业诊断与多重检验校正、真实数据完整覆盖、动态股票池及退市收益、真实公司行动与财务核验。
 
 在线报价和日线适配已实现，但迭代 005 的真实联网复测仍被云代理拒绝；图中的连接表示代码调用路径，不表示来源覆盖、延迟或真实投资效果已验收。合成数据、价格收益和含分红总回报始终分别标识。不建设多用户、付费或券商交易系统。
 
@@ -78,9 +78,9 @@ System_Ext(upstream, "新浪 / 东方财富", "报价与未复权日线；联网
 System_Ext(model, "ChatGPT / DeepSeek 客户端", "人工复制上下文与提案")
 System_Ext(modelapi, "OpenAI / DeepSeek API", "受限提案与用量；真实联测待验收")
 System_Boundary(quantify, "Quantify / 同一台本地机器") {
-  Container(web, "网页界面", "原生 HTML / JS / CSS", "工作台、研究室、行情、验证、组合、诊断、多因子页；HTTP 轮询")
+  Container(web, "网页界面", "原生 HTML / JS / CSS", "工作台、研究室、行情、验证、组合、诊断、多因子、组合验证页；HTTP 轮询")
   Container(server, "应用主进程", "Python / ThreadingHTTPServer", "127.0.0.1；请求线程、QueueManager、MarketService线程")
-  Container(worker, "任务工作子进程", "python -m quantify.worker", "一次执行一个 experiment / research / history / portfolio / diagnostic / increment 任务，结束后退出")
+  Container(worker, "任务工作子进程", "python -m quantify.worker", "一次执行一个 experiment / research / history / portfolio / diagnostic / increment / portfolio_validation 任务，结束后退出")
   ContainerDb(db, "研究数据库", "SQLite 文件 / research.sqlite3", "产物、队列、日志、行情状态、暴露与生效台账；无独立数据库服务")
 }
 Rel(researcher, web, "使用", "浏览器")
@@ -104,7 +104,7 @@ SHOW_LEGEND()
 | 网络监听 | 只监听 `127.0.0.1`，供本机浏览器使用 |
 | 数据存储 | 各服务通过独立 SQLite 连接读写同一文件；不是每个模块一个数据库 |
 | 队列 | 每个数据目录通过 `queue.lock` 保证一个 QueueManager；一次一个工作子进程，最多50个未结束任务 |
-| 同步计算 | 旧分析、同步工作台操作、最终验收和前向更新受全局 `WORK` 请求信号量保护；释放后才发送响应 |
+| 同步计算 | 旧分析、同步工作台、单笔最终验收与手动前向受请求锁保护；组合最终验收使用队列 |
 | 并发边界 | 请求信号量与后台队列相互独立，不是全系统单一计算锁；SQLite 事务保护关键写入 |
 | 外网 | 在线适配器及选定的模型提供方按需访问固定HTTPS目标；报价/下载默认关闭，模型默认手动模式 |
 | 停机与恢复 | 正常退出停止行情/队列线程及当前子进程；启动时排队/运行任务转为 interrupted，不自动重跑 |
@@ -122,6 +122,7 @@ SHOW_LEGEND()
 | `/market` 在线数据 | 自选股报价、缓存/失败提示、历史下载及每日调度设置 | `/api/market/*` |
 | `/increments` 多因子增量 | 固定权重版本、添加/移除比较、引用查询与复现 | `/api/increments/*`，任务控制复用 `/api/lab/*` |
 | `/diagnostics` 因子诊断 | 开发期覆盖/IC/分组/时期/相关、跨会话尝试/重复、导出与复现 | `/api/diagnostics/*`，任务控制复用 `/api/lab/*` |
+| `/portfolio-validation` 组合验证 | 冻结、独立留出账本与组合政策、人工启用/替换/退役/回滚 | `/api/portfolio-validation/*`，任务控制复用 `/api/lab/*` |
 | `/portfolio` 组合回放 | 固定因子开发窗双账本、费用/执行、净值/回撤、导出与复现 | `/api/portfolio/*`，任务控制复用 `/api/lab/*` |
 | `/strategies` 验证与版本 | 冻结、最终验收、人工启用/替换/退役/回滚、月度信号与观察 | `/api/strategies/*` |
 
@@ -157,4 +158,4 @@ python docs/design/render_diagrams.py --jar /path/to/plantuml-1.2025.4.jar
 python docs/design/render_diagrams.py --out /tmp/quantify-design --jar /path/to/plantuml-1.2025.4.jar
 ```
 
-当前共有23幅图。修改图表只编辑 Markdown 代码块，再重新导出；生成的 `.puml` / `.svg` 不作为第二份手工维护的源文件。本轮设计与验收见[迭代011](../iterations/011-factor-increments/README.md)，原文档建立记录见[迭代 006](../iterations/006-outline-design/README.md)。
+当前共有25幅图。修改图表只编辑 Markdown 代码块，再重新导出；生成的 `.puml` / `.svg` 不作为第二份手工维护的源文件。本轮设计与验收见[迭代012](../iterations/012-portfolio-validation/README.md)，原文档建立记录见[迭代 006](../iterations/006-outline-design/README.md)。

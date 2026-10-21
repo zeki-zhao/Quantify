@@ -49,7 +49,7 @@ class ResearchStore:
         if row is None:
             raise ValueError('记录不存在')
         body = json.loads(row[2])
-        if kind in ('snapshot', 'factor', 'freeze', 'portfolio_spec') and digest(body) != row[0]:
+        if kind in ('snapshot', 'factor', 'freeze', 'portfolio_spec', 'portfolio_freeze') and digest(body) != row[0]:
             raise ValueError('记录摘要校验失败')
         return {'id': row[0], 'created_at': row[1], **body}
 

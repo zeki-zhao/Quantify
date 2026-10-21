@@ -7,6 +7,7 @@ from .objectives import assess
 from .model_calls import APIProposalProvider
 from .model_api import ModelError
 from .portfolio_service import PortfolioService
+from .portfolio_lifecycle import PortfolioLifecycle
 from .diagnostics_service import DiagnosticService
 from .increment_service import IncrementService
 
@@ -145,6 +146,16 @@ def execute(directory, job_id, owner):
     try:
         if job['kind'] == 'research':
             run_research(store, job, owner)
+        elif job['kind'] == 'portfolio_validation':
+            if job['payload']['engine'] != engine_fingerprint():
+                raise ValueError('组合验收排队后引擎改变，请恢复冻结环境')
+            def checkpoint(progress):
+                if store.job(job_id)['stop_requested']:
+                    raise StopRequested()
+                store.checkpoint(job_id, owner, progress)
+            result = PortfolioLifecycle(Workbench(directory)).evaluate(freeze_id=job['payload']['freeze_id'], checkpoint=checkpoint, job_id=job_id)
+            store.finish(job_id, owner, 'succeeded' if result['status']=='completed' else 'failed',
+                         result={'portfolio_evaluation_id':result['id']}, error=result.get('error'))
         elif job['kind'] == 'increment':
             if job['payload']['engine'] != engine_fingerprint():
                 raise ValueError('增量评估排队后引擎改变，请重新提交')

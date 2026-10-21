@@ -46,18 +46,20 @@ class PortfolioService:
         if spec['engine']!=engine_fingerprint():raise ValueError('组合版本属于旧引擎，请按当前实验创建新版本')
         return self.jobs.create('portfolio',dict(spec_id=spec_id,engine=engine_fingerprint()),integer(timeout_seconds,'组合运行时限',1,3600))
 
-    def _inputs(self,spec):
+    def _inputs(self,spec,*,window_start=None,window_end=None):
+        window_start=window_start or spec['start']
+        window_end=window_end or spec['development_end']
         monthly=self.store.get('snapshot',spec['monthly_id'])
         daily=self.store.get('snapshot',spec['daily_id']);states=self.store.get('snapshot',spec['execution_id'])
         factor=self.store.get('factor',spec['factor_id'])
-        rows=[row for row in monthly['rows'] if row['date']<spec['holdout_start']]
+        rows=[row for row in monthly['rows'] if row['date']<=window_end]
         dates,panel=parse_panel(datasets.csv_text('monthly_price',rows),required_fields=factors.required_fields([factor]),return_basis='price')
         symbols=set(panel[0])
         if not monthly['is_demo'] and any(not re.fullmatch(r'(?:60\d{4}\.SH|00\d{4}\.SZ|30\d{4}\.SZ)',s) for s in symbols):
             raise ValueError('首版仅支持沪深主板/创业板100股单位，科创板/北交所及其他品种尚未覆盖')
         grouped={}
         for row in daily['rows']:
-            if row['symbol'] in symbols and row['date']<=spec['development_end']:
+            if row['symbol'] in symbols and row['date']<=window_end:
                 grouped.setdefault(row['date'],{})[row['symbol']]=row
         for stamp,month in zip(dates,panel):
             stamp=stamp.isoformat()
@@ -66,10 +68,10 @@ class PortfolioService:
             for symbol in symbols:
                 if price(month[symbol]['close'])!=price(grouped[stamp][symbol]['close']):
                     raise ValueError('月度价格和绑定日线收盘不一致，不能混用版本')
-        bars={stamp:month for stamp,month in grouped.items() if stamp>=spec['start']}
+        bars={stamp:month for stamp,month in grouped.items() if stamp>=window_start}
         execution={}
         for row in states['rows']:
-            if row['symbol'] in symbols and spec['start']<=row['date']<=spec['development_end']:
+            if row['symbol'] in symbols and window_start<=row['date']<=window_end:
                 execution.setdefault(row['date'],{})[row['symbol']]=row
         if not bars or set(execution)!=set(bars):raise ValueError('执行状态日期必须完整覆盖回放日线，缺失不能视为可成交')
         for stamp,month in bars.items():
@@ -86,7 +88,7 @@ class PortfolioService:
                     low,high=price(state['limit_down']),price(state['limit_up'])
                     if min(levels)<low or max(levels)>high:raise ValueError('OHLC超出声明限价，先核对公司行动/状态数据')
         start_index=next(i for i,stamp in enumerate(dates) if stamp.isoformat()==spec['start'])
-        signal_dates={dates[i].isoformat() for i in range(start_index,len(dates),spec['config']['rebalance_months'])}
+        signal_dates={dates[i].isoformat() for i in range(start_index,len(dates),spec['config']['rebalance_months']) if dates[i].isoformat()>=window_start}
         return dates,panel,bars,execution,factor,signal_dates,monthly,daily,states
 
     def run(self, *, spec_id, run_id=None, checkpoint=None):

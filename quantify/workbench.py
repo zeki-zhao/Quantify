@@ -13,7 +13,7 @@ from .objectives import policy
 
 def engine_fingerprint():
     root = Path(__file__).parent
-    names = ('research.py', 'factors.py', 'core.py', 'datasets.py', 'workbench.py', 'expressions.py', 'objectives.py', 'lifecycle.py', 'worker.py', 'research_tools.py', 'lab.py', 'model_api.py', 'model_calls.py', 'portfolio.py', 'portfolio_service.py', 'diagnostics.py', 'diagnostics_service.py', 'trial_audit.py', 'increments.py', 'increment_service.py')
+    names = ('research.py', 'factors.py', 'core.py', 'datasets.py', 'workbench.py', 'expressions.py', 'objectives.py', 'lifecycle.py', 'worker.py', 'research_tools.py', 'lab.py', 'model_api.py', 'model_calls.py', 'portfolio.py', 'portfolio_service.py', 'diagnostics.py', 'diagnostics_service.py', 'trial_audit.py', 'increments.py', 'increment_service.py', 'portfolio_lifecycle.py', 'portfolio_policy.py', 'exposures.py')
     hashed = hashlib.sha256()
     for name in names:
         hashed.update(name.encode())

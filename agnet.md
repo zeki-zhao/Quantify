@@ -32,4 +32,6 @@
 
 - 011新增 `/increments` 与 `docs/FACTOR_INCREMENTS.md`：不可变多因子/精确权重、同窗添加/逐项移除及版本引用；第六种increment任务。AI可选augment模式固定原组合和候选占比，每轮一个新增公式，不逐轮累加、不自动启用。覆盖不全拒判改善；单笔增量不是净值归因/独立最终验收。下一步P3.2组合独立验收与更替，之后A6自动串联。
 
+- 012新增 `/portfolio-validation`、`docs/PORTFOLIO_VALIDATION.md`：组合冻结/独立留出现金回放/专门准入与人工启用更替；第七种portfolio_validation任务，共用单笔暴露台账并检查已知开发暴露。最终结果不进入AI，启用仅改变研究引用；不继承持仓，组合前向账本和A6自动串联继续待做。
+
 - 011本地接续（2026-10-17）：本地与GitHub的`work`同为`aa7dc3b`，云端已提交代码无需再拉取；Windows 126项测试及CLI启动/HTTP检查通过，浏览器未复跑。云端聊天、未提交内容和运行数据库尚未同步。下一功能优先A3多因子引用/增量评估，下个迭代012；详细证据见`docs/iterations/011-local-sync/README.md`。
