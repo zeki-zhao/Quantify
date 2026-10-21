@@ -4,7 +4,7 @@
 
 ## 1. C4 Level 3：应用编排组件
 
-`Handler` 按路由选择服务，`Lab` 负责组装工作台、生命周期、组合、诊断、队列和行情服务；图中的编排关系不表示这些服务所有请求都必须依次经过 Lab 的业务方法。
+`Handler` 按路由选择服务，`Lab` 负责组装工作台、生命周期、组合、诊断、增量、队列和行情服务；图中的编排关系不表示这些服务所有请求都必须依次经过 Lab 的业务方法。
 
 ```plantuml
 @startuml c4_components
@@ -20,6 +20,7 @@ Container_Boundary(app, "应用主进程 / app.py") {
   Component(handler, "Handler", "app.py", "静态资源、JSON 边界、路由、同步请求计算锁")
   Component(lab, "Lab", "lab.py", "会话、模型配置、协作包、任务提交与服务组装")
   Component(wb, "Workbench", "workbench.py", "数据/因子操作、实验、比较与复现")
+  Component(increments, "IncrementService", "increment_service.py", "固定多因子、同窗添加/移除与引用、AI摘要")
   Component(diagnostics, "DiagnosticService", "diagnostics_service.py", "开发窗诊断/缓存、队列、跨会话试验统计")
   Component(portfolio, "PortfolioService", "portfolio_service.py", "组合版本、输入与开发边界校验、回放任务")
   Component(lifecycle, "Lifecycle", "lifecycle.py", "冻结、最终验证、研究版本与前向标签")
@@ -30,6 +31,10 @@ Container_Boundary(app, "应用主进程 / app.py") {
 Rel(web, handler, "请求", "HTTP")
 Rel(handler, wb, "/api/workspace/*")
 Rel(handler, lab, "/api/lab/*")
+Rel(handler, increments, "/api/increments/*")
+Rel(lab, increments, "持有服务实例")
+Rel(increments, db, "factor / factor_increment / 引用")
+Rel(increments, queue, "通过 JobStore 提交 increment 任务")
 Rel(handler, diagnostics, "/api/diagnostics/*")
 Rel(lab, diagnostics, "持有服务实例")
 Rel(diagnostics, db, "固定请求 / 结果 / 只读试验统计")
@@ -67,6 +72,7 @@ SHOW_LEGEND()
 | 在线适配 | `market_providers.py` | 固定 HTTPS 响应 → 规范化报价/日线 | 新浪 GBK 严格解析、东财 JSON/单位转换；响应脚本不执行；有限重试 |
 | 行情编排 | `market.py` | 配置/日期/股票 → 报价缓存或 history 任务 | 旧好报价保留；时间倒退与过期提示；每日意图先持久化再提交 |
 | 因子与公式 | `factors.py`、`expressions.py` | 因子定义 + 历史面板 → 截面分值 | 版本不可变；窗口只看过去；AST 白名单及复杂度/数值边界 |
+| 多因子增量 | `factors.py`、`increments.py`、`increment_service.py` | 固定版本/权重与开发窗 → 配对/移除报告、引用 | 不嵌套；Fraction权重；整窗配对拒算；不是净值归因 |
 | 研究计算 | `research.py` | 开发面板、因子、费用、目标 → 分窗单笔统计 | 标签成熟、延迟入场、共同窗口；固定池，不核算组合资金 |
 | 因子诊断 | `diagnostics.py`、`diagnostics_service.py`、`trial_audit.py` | 固定开发实验/因子 → 诊断、重复/尝试计数 | 截除留出，同信号窗；并列/常数/缺失可见；模型摘要受作用域与白名单限制 |
 | 组合回放 | `portfolio_service.py`、`portfolio.py` | 版本/日线/状态 → 双账本/净值/成交 | 仅开发窗；信号股数冻结、整手/T+1、FIFO对账；不继承最终准入 |
@@ -141,7 +147,7 @@ end note
 
 内置动量、质量、价值、低波动及组合；新版本保留父版本和修改理由。公式允许 `quality`、`value`、`momentum`、`volatility`、`rank`、`zscore` 和有限算术，不允许导入、属性、任意函数或未来窗口。表达式最长500字符、80个 AST 节点、12层；窗口2–24月、跳过0–6月。
 
-每轮 AI 候选挂在当前最佳实验的首因子之下；新公式作为一个完整因子独立检验。公式可组合原语，但尚不能引用多个已版本化因子做组合增量分析。
+默认replace模式每轮AI候选挂在当前最佳实验的首因子之下，新公式独立检验。011可选augment模式另将新公式以冻结占比加入固定原组合，成分版本与精确权重可追溯；配对增量见第11节。
 
 ### 3.3 目标政策与比较基准
 
@@ -423,3 +429,40 @@ end note
 - 模型同轮复用比较：只忽略当前 `diagnostics.trial_counts`，其余请求、模型配置和预算全部保持绑定；成功响应复用缓存，不发HTTP。明确可重试失败仍按原存储请求重试，每次独立预留；unknown不重发。原始请求/hash审计不改写。
 - `static/task_watcher.js` 是诊断/组合页共享的浏览器组件：观察版本区分新提交/重试，轮询序号区分同任务并发请求；只有当前响应能渲染状态、完成报告及按钮。研究室详情独立按请求序号和所选ID防护。
 - 诊断因子选项在同源实验刷新时保留，切换源实验时重新默认。试验范围查询独立递增序号，并同时核对当前范围/实验；加载期清空旧值、禁导出，避免界面与导出错配。见[异步流程](FLOWS.md#13-页面异步响应与当前任务010)。
+
+
+## 11. 多因子引用与增量模块（011）
+
+```plantuml
+@startuml factor_increment_components
+skinparam defaultFontName Noto Sans CJK SC
+title 多因子引用、增量计算与AI反馈
+component "多因子页面 / increments.js\nTaskWatcher / 报告请求序号" as web
+component "IncrementService\n版本 / 请求 / 缓存 / 引用" as service
+component "factors.py\n叶子定义 / Fraction权重\n平均秩百分位加权" as factors
+component "development_data\n源实验成熟测试信号窗\ndate < holdout_start" as data
+component "increments.analyze\n原组合 / 候选 / 加入后\n逐项移除 / 配对覆盖 / 目标政策" as calc
+component "worker / ResearchTools\naugment原组合及占比冻结" as ai
+component "compact_report / compact_increment\n两层聚合字段白名单" as compact
+database "SQLite\nfactor / factor_increment\nexperiment / jobs / 试验统计" as db
+cloud "手动ChatGPT / OpenAI / DeepSeek" as model
+web --> service : 创建 / 提交 / 查看 / 引用
+service --> factors : 固定叶子版本；禁止嵌套
+service --> db : 绑定版本 / 不可变报告
+service --> data : 固定源实验开发边界
+service --> calc : 所有变体同池 / 同窗 / 同成本
+calc --> factors : 信号时点及之前输入
+ai --> service : 运行候选；核对实验指标/覆盖
+ai --> compact : 当前最佳及逐轮增量
+compact --> model : 成分定义及汇总；无逐股或留出
+model --> ai : 一个受限公式；不改权重/原组合
+note bottom of calc
+  整个配对窗口拒算缺失，覆盖不完整不得判改善
+  移除贡献不可相加；不是净值归因或独立最终验收
+end note
+@enduml
+```
+
+`blend`以完整成分定义及ID保存引用，排序按ID规范化；显示权重与精确有理数同时存储。`factor_increment`固定请求+引擎摘要标识，复现返回缓存并新增队列历史。`increment`为第六类队列任务，沿用取消/超时/重试/启动中断，不支持暂停。跨会话统计另计报告和任务，AI候选实验仍归原收益实验，不能相加声称独立样本。
+
+`augment`每轮对固定原基线增加一个新公式，占比在会话创建时冻结；不是累加当前最佳成分。固定组合实验与增量报告指标/覆盖核对后，继续按原目标与额外约束相对当前最佳及原基线判断。版本引用涵盖组合成分、派生版本、实验、冻结的目标/参照、组合版本和增量报告；无历史覆盖。详见[操作与统计口径](../FACTOR_INCREMENTS.md)。

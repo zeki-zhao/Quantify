@@ -5,6 +5,7 @@ from .model_api import ModelSettings, api_limits, credential
 from .market import MarketService
 from .portfolio_service import PortfolioService
 from .diagnostics_service import DiagnosticService
+from .increment_service import IncrementService
 from .lifecycle import Lifecycle
 from .expressions import GRAMMAR, validate_expression
 from .jobs import QueueManager
@@ -28,6 +29,7 @@ class Lab:
         self.models = ModelSettings(self.store)
         self.portfolio = PortfolioService(self.workbench, self.store)
         self.diagnostics = DiagnosticService(self.workbench, self.store)
+        self.increments = IncrementService(self.workbench, self.store)
         self.market = MarketService(directory, self.store)
 
     def close(self):
@@ -55,7 +57,8 @@ class Lab:
         return self.store.create('experiment', payload, timeout_seconds)
 
     def create_session(self, *, baseline_id, goal, max_rounds=5, max_candidates=5,
-                       patience=3, timeout_seconds=300, min_mean_improvement=None, max_tail_deterioration=None, provider='manual', api_budget=None):
+                       patience=3, timeout_seconds=300, min_mean_improvement=None, max_tail_deterioration=None, provider='manual', api_budget=None,
+                       research_mode='replace', candidate_weight=.25):
         if not isinstance(goal, str) or not goal.strip() or len(goal) > 2000:
             raise ValueError('研究目标需为 1 至 2000 字')
         if provider not in ('manual', 'openai', 'deepseek'):
@@ -70,9 +73,19 @@ class Lab:
                 raise ValueError('请先配置该提供方的模型和预算估算单价')
             api_config['limits'] = api_limits(api_budget)
         baseline = self.store.get('experiment', baseline_id)
+        if research_mode not in ('replace', 'augment'):
+            raise ValueError('研究模式必须为 replace 或 augment')
+        candidate_weight = number(candidate_weight, '固定候选权重', .01, .99)
+        if research_mode == 'augment':
+            if len(baseline['request']['factor_ids']) != 1:
+                raise ValueError('增量研究需要仅绑定一个固定因子或多因子组合的基线实验')
+            from .factors import constituents
+            if len(constituents(self.store.get('factor', baseline['request']['factor_ids'][0]))) >= 10:
+                raise ValueError('增量研究的原组合最多9个成分')
         progress = initial_progress(baseline)
-        ResearchTools(self.store.directory, baseline_id, progress).call('get_research_context')
+        ResearchTools(self.store.directory, baseline_id, progress, research_mode=research_mode, candidate_weight=candidate_weight).call('get_research_context')
         payload = dict(objective=policy(baseline['request']['objective']), baseline_id=baseline_id, goal=goal.strip(), provider=provider, proposals=[],
+                       research_mode=research_mode, candidate_weight=candidate_weight,
                        max_rounds=integer(max_rounds, '最大轮数', 1, 10),
                        max_candidates=integer(max_candidates, '候选数', 1, 10),
                        patience=integer(patience, '停止前无改进轮数', 1, 10),
@@ -87,7 +100,8 @@ class Lab:
         job = self.store.job(job_id)
         if job['kind'] != 'research':
             raise ValueError('该任务不是研究会话')
-        tools = ResearchTools(self.store.directory, job['payload']['baseline_id'], job['progress'], session_id=job_id)
+        tools = ResearchTools(self.store.directory, job['payload']['baseline_id'], job['progress'], session_id=job_id,
+                              research_mode=job['payload'].get('research_mode', 'replace'), candidate_weight=job['payload'].get('candidate_weight', .25))
         context = tools.call('get_research_context')
         prompt = (
             '请作为因子研究助手，根据以下固定协议的开发窗结果提出一个可证伪的改进假设。'
@@ -96,7 +110,7 @@ class Lab:
             '公式只使用 formula_language 中的函数/字段；质量字段不可用时不得引用。'
             '输出 action、name、expression、rationale；若没有有根据的新方案，action=stop。'
             '按 context.objective 的结构化主目标与约束提出方案；自然语言目标用于解释假设，'
-            '不代表系统已实现换手、回撤或组合指标。')
+            '不代表系统已实现换手、回撤或组合指标。增量模式只提出一个新增公式，系统按冻结权重加入固定原组合；不是每轮累加成分。')
         return {'session_id': job_id, 'goal': job['payload']['goal'], 'prompt': prompt, 'context': context,
                 'constraints': {key: job['payload'][key] for key in ('max_rounds', 'max_candidates', 'patience',
                                'min_mean_improvement', 'max_tail_deterioration', 'objective')},
@@ -112,7 +126,8 @@ class Lab:
         if old['kind'] == 'research':
             baseline = self.store.get('experiment', old['payload']['baseline_id'])
             progress = initial_progress(baseline)
-            ResearchTools(self.store.directory, baseline['id'], progress)
+            ResearchTools(self.store.directory, baseline['id'], progress, research_mode=old['payload'].get('research_mode', 'replace'),
+                          candidate_weight=old['payload'].get('candidate_weight', .25))
         elif old['kind'] == 'history':
             progress = {}
         else:
@@ -131,7 +146,7 @@ class Lab:
                     'formula_language': GRAMMAR, 'proposal_schema': PROPOSAL_SCHEMA}
         if path == '/api/lab/jobs':
             return [{key: value for key, value in job.items() if key not in ('payload', 'progress', 'owner')}
-                    | {'goal': job['payload'].get('goal', '历史日线下载' if job['kind'] == 'history' else '组合回放' if job['kind'] == 'portfolio' else '因子诊断' if job['kind'] == 'diagnostic' else '单次因子实验')}
+                    | {'goal': job['payload'].get('goal', '因子增量评估' if job['kind'] == 'increment' else '历史日线下载' if job['kind'] == 'history' else '组合回放' if job['kind'] == 'portfolio' else '因子诊断' if job['kind'] == 'diagnostic' else '单次因子实验')}
                     for job in self.store.jobs()]
         prefix = '/api/lab/jobs/'
         if path.startswith(prefix):

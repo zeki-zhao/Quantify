@@ -110,7 +110,7 @@ def compact_diagnostic(diagnostic):
     summary_keys = ('windows','scored_windows','ic_windows','constant_or_undefined_ic','score_coverage','input_coverage','mean_rank_ic','rank_ic_std','positive_ic_fraction','mean_high_minus_low','spread_windows')
     safe_diagnostic['factors'] = [dict(factor_id=f['factor_id'],summary={key:f['summary'][key] for key in summary_keys if key in f['summary']}) for f in report.get('factors', [])]
     safe_diagnostic['correlations'] = [{key:r[key] for key in ('left_id','right_id','common_scored_windows','valid_windows','mean_rank_correlation') if key in r} for r in report.get('correlations', [])]
-    safe_diagnostic['trial_counts'] = {key:diagnostic.get('trial_counts', {}).get(key) for key in ('experiments','repeated_experiments','sessions','proposals_consumed','unique_valid_formulas','invalid_formulas','repeated_proposals','proposal_statuses')}
+    safe_diagnostic['trial_counts'] = {key:diagnostic.get('trial_counts', {}).get(key) for key in ('experiments','repeated_experiments','sessions','proposals_consumed','unique_valid_formulas','invalid_formulas','repeated_proposals','proposal_statuses','increment_reports','increment_jobs')}
     return safe_diagnostic
 
 
@@ -121,17 +121,41 @@ def compact_context(context, feedback, goal):
                                           'data_window', 'warning', 'return_basis', 'price_basis', 'data_warnings')}
     base['folds'] = [{key: fold[key] for key in ('test_signal_start', 'test_last_exit', 'chosen_factor', 'selected', 'baseline')}
                      for fold in baseline['folds']]
-    factors = [{key: factor[key] for key in ('id', 'name', 'kind', 'parent_id', 'lookback', 'skip', 'expression') if key in factor}
-               for factor in context['factors']]
+    def factor_definition(factor):
+        result = {key: factor[key] for key in ('id', 'name', 'kind', 'parent_id', 'lookback', 'skip', 'expression') if key in factor}
+        if factor.get('kind') == 'blend':
+            result['components'] = [dict(weight=c['weight'], ratio=c['ratio'], factor=factor_definition(c['factor'])) for c in factor['components']]
+        return result
+    factors = [factor_definition(factor) for factor in context['factors']]
     history = [{key: outcome[key] for key in ('round', 'proposal', 'status', 'selected', 'decision', 'baseline_decision', 'error')
                 if key in outcome} for outcome in feedback]
     for row, outcome in zip(history, feedback):
         if 'diagnostics' in outcome:
             row['diagnostics'] = compact_diagnostic(outcome['diagnostics'])
+        if 'increment' in outcome:
+            row['increment'] = compact_increment(outcome['increment'])
     safe_diagnostic = compact_diagnostic(context.get('diagnostics', {}))
     return dict(goal=goal, objective=context['objective'], baseline=base, data=context['data'], factors=factors, diagnostics=safe_diagnostic,
+                research_mode=context.get('research_mode'), increment=compact_increment(context.get('increment')),
                 formula_language=context['formula_language'], proposal_schema=PROPOSAL_SCHEMA, feedback=history,
                 limitations=['仅开发窗统计，最终留出结果不可用。', '多轮择优有选择偏差，不能证明真实效果。'])
+
+
+def compact_increment(report):
+    """Allow only aggregate paired statistics; discard raw rows, symbols and windows."""
+    if report is None:
+        return None
+    result = {k: report[k] for k in ('status', 'report_id', 'augmented_factor_id', 'is_demo', 'return_basis', 'note') if k in report}
+    summary = report.get('summary', {})
+    def metrics(value):
+        return {k: value[k] for k in ('mean_return', 'positive_rate', 'worst_return', 'observations') if k in value} if isinstance(value, dict) else None
+    result['summary'] = {k: summary[k] for k in ('expected_windows', 'paired_windows', 'comparison_eligible', 'selected_overlap', 'positive_mean_delta_windows') if k in summary}
+    result['summary']['metrics'] = {k: metrics(v) for k, v in summary.get('metrics', {}).items() if k in ('base', 'candidate', 'augmented') or k.startswith('without-')}
+    result['summary']['augmented_minus_base'] = metrics(summary.get('augmented_minus_base'))
+    result['summary']['ablations'] = [dict(omitted_factor_id=r['omitted_factor_id'], augmented_minus_without=metrics(r.get('augmented_minus_without'))) for r in summary.get('ablations', [])]
+    decision = summary.get('decision', {})
+    result['summary']['decision'] = {k: decision[k] for k in ('accepted', 'checks', 'reasons') if k in decision}
+    return result
 
 
 def request_body(config, package, limits):

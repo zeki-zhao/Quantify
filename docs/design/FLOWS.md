@@ -632,3 +632,56 @@ note over page, watcher
 end note
 @enduml
 ```
+
+
+## 14. 多因子添加、移除与AI增量（011）
+
+```plantuml
+@startuml factor_increment_flow
+skinparam defaultFontName Noto Sans CJK SC
+title 固定多因子与配对增量评估
+actor 研究者 as User
+participant "网页 / AI worker" as Caller
+participant "IncrementService" as Service
+participant "factors" as Factor
+participant "development_data / increments" as Calc
+database SQLite as DB
+User -> Caller : 选择2至10个版本及正权重
+Caller -> Factor : create_blend(components, parent_id)
+Factor -> DB : 保存叶子快照/ID/精确权重；不可覆盖
+User -> Caller : 运行仅绑定此版本的基线实验
+Caller -> DB : 保存固定源实验
+User -> Caller : 选新增候选及占比，或创建augment会话
+note right of Caller
+  augment每轮提出一个公式
+  原组合和占比固定，不逐轮累加
+end note
+Caller -> Service : request / submit / run
+Service -> DB : 核对源实验/引擎/引用/候选
+alt 同请求与引擎已有报告
+  DB --> Service : 返回不可变缓存
+else 首次评估
+  Service -> Factor : 按精确比例加入候选并保存新组合
+  Service -> Calc : 仅开发数据与源成熟信号窗
+  loop 每个源测试信号窗
+    Calc -> Factor : 原组合/候选/加入后/逐项移除
+    Factor --> Calc : 仅当期及过去输入的截面分值
+    Calc -> Calc : 同池Top K、延迟入场、同退出与成本
+    alt 任一变体缺失/错误
+      Calc -> Calc : 整配对窗拒算；保留原因
+    else 完整
+      Calc -> Calc : 保存配对指标及差值
+    end
+  end
+  Calc --> Service : 汇总/时期/移除贡献/覆盖与决策
+  Service -> DB : 不可变factor_increment；失败也留档
+end
+Service --> Caller : 本地完整证据 / AI聚合白名单摘要
+Caller -> Caller : augment核对候选实验指标与配对覆盖
+Caller -> User : 当前最佳/原基线比较；不自动启用
+note over Caller, Calc
+  不读取最终留出；覆盖不完整不得判改善
+  单笔差值不是资金净值归因，仍须独立最终验收
+end note
+@enduml
+```

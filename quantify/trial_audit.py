@@ -3,6 +3,7 @@ import json
 from collections import Counter,defaultdict
 from contextlib import closing
 from datetime import datetime,timezone
+from fractions import Fraction
 
 from .expressions import validate_expression
 from .storage import digest
@@ -10,6 +11,10 @@ from .storage import digest
 
 def factor_signature(spec):
     kind=spec['kind']
+    if kind=='blend':
+        total=sum(Fraction(*c['ratio']) for c in spec['components'])
+        return digest(dict(kind='blend',components=sorted(
+            [(factor_signature(c['factor']),str(Fraction(*c['ratio'])/total)) for c in spec['components']])))
     expression=spec.get('expression')
     if kind in ('quality','value'):expression=kind
     if kind=='momentum':expression=f"momentum({spec['lookback']},{spec['skip']})"
@@ -26,21 +31,25 @@ def audit_trials(store,experiment_id=None):
     with closing(store.connect()) as db:
         db.execute('BEGIN')
         # Keep kinds separately, since artifacts need not be content-addressed.
-        rows=db.execute("SELECT kind,id,body FROM artifacts WHERE kind IN ('experiment','factor')")
+        rows=db.execute("SELECT kind,id,body FROM artifacts WHERE kind IN ('experiment','factor','factor_increment')")
         by_kind=defaultdict(dict)
         for kind,i,body in rows:
             item=json.loads(body)
             if kind=='experiment':item={key:item[key] for key in ('request','engine','status')}
+            if kind=='factor_increment':item={key:item[key] for key in ('request','status')}
             by_kind[kind][i]=dict(id=i,**item)
         tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         jobs=[dict(id=i,status=status,payload=json.loads(payload),progress=json.loads(progress)) for i,status,payload,progress in db.execute("SELECT id,status,payload,progress FROM jobs WHERE kind='research'")] if 'jobs' in tables else []
         events=[(i,json.loads(body)) for i,body in db.execute("SELECT job_id,body FROM job_events WHERE event='proposal' ORDER BY sequence")] if 'job_events' in tables else []
+        increment_jobs=[dict(id=i,status=status,payload=json.loads(payload)) for i,status,payload in db.execute("SELECT id,status,payload FROM jobs WHERE kind='increment'")] if 'jobs' in tables else []
     experiments=by_kind['experiment']
     if experiment_id is not None and (not isinstance(experiment_id,str) or experiment_id not in experiments):
         raise ValueError('实验记录不存在')
     anchor=experiments[experiment_id] if experiment_id else None
     scope=protocol_key(anchor) if anchor else None
     selected={i:r for i,r in experiments.items() if scope is None or protocol_key(r)==scope}
+    increments=[r for r in by_kind['factor_increment'].values() if scope is None or r['request']['experiment_id'] in selected]
+    increment_jobs=[j for j in increment_jobs if scope is None or j['payload'].get('request',{}).get('experiment_id') in selected]
     jobs=[j for j in jobs if j['payload'].get('baseline_id') in selected]
     proposals={};job_map={j['id']:j for j in jobs}
     for job_id,e in events:
@@ -72,6 +81,8 @@ def audit_trials(store,experiment_id=None):
     return dict(as_of=datetime.now(timezone.utc).isoformat(),scope='same_protocol' if scope else 'local_directory',
                 protocol_key=scope,experiment_id=experiment_id,
                 counts=dict(experiments=len(selected),experiment_statuses=dict(Counter(e['status'] for e in selected.values())),
+                            increment_reports=len(increments),increment_statuses=dict(Counter(r['status'] for r in increments)),
+                            increment_jobs=len(increment_jobs),increment_job_statuses=dict(Counter(j['status'] for j in increment_jobs)),
                             repeated_experiments=sum(len(v)-1 for v in experiment_groups.values()),sessions=len(jobs),
                             proposals_consumed=consumed,unique_valid_formulas=len(formula_groups),invalid_formulas=invalid,
                             repeated_proposals=sum(len(v)-1 for v in formula_groups.values()),stop_proposals=stops,
@@ -80,4 +91,4 @@ def audit_trials(store,experiment_id=None):
                 repeated_formula_groups=[dict(signature=k,attempts=len(v),sessions=len({r['session_id'] for r in v}),records=v) for k,v in sorted(formula_groups.items()) if len(v)>1],
                 repeated_experiment_groups=[dict(signature=k,experiment_ids=v) for k,v in sorted(experiment_groups.items()) if len(v)>1],
                 repeated_factor_definitions=[dict(signature=k,factor_ids=v) for k,v in sorted(factor_groups.items()) if len(v)>1] if scope is None else [],
-                note='仅同一数据目录内的可观察记录；重放/失败/重复不删除，不是独立试验数。重复仅按结构化公式/参数识别，不证明代数等价。诊断任务不计为收益实验；未消费提案不计尝试。')
+                note='仅同一数据目录内的可观察记录；重放/失败/重复不删除，不是独立试验数。重复仅按结构化公式/参数识别，不证明代数等价。诊断任务不计为收益实验；增量报告与队列任务另计，缓存重放不新增报告但新增任务；未消费提案不计尝试。')

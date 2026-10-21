@@ -1,6 +1,7 @@
 """Scoped research tools: fixed baseline/data/protocol, with no holdout-row tool."""
 from . import factors
 from .diagnostics_service import DiagnosticService
+from .increment_service import IncrementService
 from .trial_audit import audit_trials
 from .expressions import GRAMMAR, validate_expression, evaluate_expression
 from .proposals import PROPOSAL_SCHEMA
@@ -9,7 +10,7 @@ from .workbench import Workbench, engine_fingerprint
 
 TOOL_NAMES = ('get_research_context', 'list_factors', 'get_factor_version', 'validate_factor',
               'create_factor_candidate', 'run_experiment', 'get_experiment_result', 'compare_runs',
-              'propose_strategy_update', 'get_factor_diagnostics')
+              'propose_strategy_update', 'get_factor_diagnostics', 'get_factor_increment')
 
 
 def summarize(experiment):
@@ -26,7 +27,7 @@ def summarize(experiment):
 
 
 class ResearchTools:
-    def __init__(self, directory, baseline_id, progress, recorder=None, session_id=None):
+    def __init__(self, directory, baseline_id, progress, recorder=None, session_id=None, research_mode='replace', candidate_weight=.25):
         self.workbench = Workbench(directory)
         self.store = self.workbench.store
         self.baseline = self.store.get('experiment', baseline_id)
@@ -37,6 +38,7 @@ class ResearchTools:
         self.progress = progress
         self.recorder = recorder
         self.session_id = session_id
+        self.research_mode, self.candidate_weight = research_mode, candidate_weight
 
     def call(self, tool_name, **arguments):
         if tool_name not in TOOL_NAMES:
@@ -74,7 +76,11 @@ class ResearchTools:
                         [key for key in ('quality', 'value') if all(row[key] is not None for month in panel for row in month.values())]},
             'factors': self._list_factors(), 'formula_language': GRAMMAR, 'proposal_schema': PROPOSAL_SCHEMA,
             'objective': self.baseline['request']['objective'],
+            'research_mode': dict(mode=self.research_mode, candidate_weight=self.candidate_weight,
+                                  base_factor_id=self.baseline['request']['factor_ids'][0],
+                                  note='增量模式每轮仅向固定原组合添加一个公式候选，权重冻结；不逐轮累加。'),
             'diagnostics': self._get_factor_diagnostics(self.progress['best_id']),
+            'increment': self._get_factor_increment(self.progress['best_id']) if self.research_mode == 'augment' and self.progress['best_id'] != self.baseline['id'] else None,
             'selection_note': '相同目标同时用于训练和候选准入；无合格替代者时保留候选列表首个基线。不是组合回测。',
             'limitations': ['只发送开发窗指标，不发送原始行情或留出期收益。',
                             '固定股票池可能有幸存者偏差，多轮候选比较不等于独立最终验证。',
@@ -117,7 +123,30 @@ class ResearchTools:
                                            reason=rationale, expression=expression)
         if candidate['id'] not in self.progress['factor_ids']:
             self.progress['factor_ids'].append(candidate['id'])
+        if self.research_mode == 'augment':
+            base = self.store.get('factor', self.baseline['request']['factor_ids'][0])
+            candidate = factors.augment(self.store, base, candidate, self.candidate_weight)
+            if candidate['id'] not in self.progress['factor_ids']:
+                self.progress['factor_ids'].append(candidate['id'])
         return candidate
+
+    def _get_factor_increment(self, experiment_id):
+        experiment = self._scoped_experiment(experiment_id)
+        if self.research_mode != 'augment' or experiment_id == self.baseline['id']:
+            raise ValueError('只有当前增量会话的候选实验可读取增量反馈')
+        augmented = self._get_factor_version(experiment['request']['factor_ids'][0])
+        base = self.store.get('factor', self.baseline['request']['factor_ids'][0])
+        original_ids = {c['factor']['id'] for c in factors.constituents(base)}
+        extras = [c['factor'] for c in augmented.get('components', []) if c['factor']['id'] not in original_ids]
+        if augmented['kind'] != 'blend' or augmented['parent_id'] != base['id'] or len(extras) != 1:
+            raise ValueError('候选组合超出固定增量协议')
+        candidate = self._get_factor_version(extras[0]['id'])
+        expected = factors.augment(self.store, base, candidate, self.candidate_weight)
+        if expected['id'] != augmented['id']:
+            raise ValueError('候选权重或版本与固定协议不一致')
+        from .increments import compact_report
+        return compact_report(IncrementService(self.workbench).run(experiment_id=self.baseline['id'],
+                              base_factor_id=base['id'], candidate_factor_id=candidate['id'], candidate_weight=self.candidate_weight))
 
     def _run_experiment(self, factor_id, experiment_id):
         self._get_factor_version(factor_id)

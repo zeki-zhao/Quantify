@@ -3,7 +3,7 @@
 Python 3.10+，**零第三方依赖**。个人本地工具，无账户、无自动交易；研究工作台使用 Python 内置 SQLite 保存数据和实验。
 重点是检验因子在样本外是否改善结果，同时保留基本面、估值和风险分析。没有“保证胜率提升”的功能。
 
-后续建设以 [构建计划](docs/BUILD_PLAN.md) 为准，覆盖真实数据接入、因子版本管理和 ChatGPT 辅助迭代；每次开发记录在 [迭代目录](docs/iterations/README.md)。CSV 数据中心、因子版本和实验记录已实现；AI 研究室已支持手动 ChatGPT 提案与有限轮次验证；在线行情与日线适配已实现，当前云环境的真实联网验收受代理阻断；OpenAI/DeepSeek API自动提案与调用预算已实现，真实模型联测待Key和可访问网络。迭代 005 补齐结构化目标、冻结最终验证、人工研究版本更替/回滚和手动前向观察；009新增因子诊断、跨会话试验统计与每轮AI诊断反馈；010自查修复模型恢复和页面异步状态；文档维护约定见 [docs 入口](docs/README.md)。
+后续建设以 [构建计划](docs/BUILD_PLAN.md) 为准，覆盖真实数据接入、因子版本管理和 ChatGPT 辅助迭代；每次开发记录在 [迭代目录](docs/iterations/README.md)。CSV 数据中心、因子版本和实验记录已实现；AI 研究室已支持手动 ChatGPT 提案与有限轮次验证；在线行情与日线适配已实现，当前云环境的真实联网验收受代理阻断；OpenAI/DeepSeek API自动提案与调用预算已实现，真实模型联测待Key和可访问网络。迭代 005 补齐结构化目标、冻结最终验证、人工研究版本更替/回滚和手动前向观察；009新增因子诊断、跨会话试验统计与每轮AI诊断反馈；010自查修复模型恢复和页面异步状态；011新增固定多因子引用、添加/移除增量评估及AI增量模式；文档维护约定见 [docs 入口](docs/README.md)。
 
 架构与关键流程见 [概要设计](docs/design/README.md)，包括 C4 拓扑、模块职责及因子迭代/最终验收/版本更替的 PlantUML 图。
 
@@ -51,6 +51,10 @@ python -m unittest discover -s tests -v
 
 从导航进入“因子诊断与试验记录”（`/diagnostics`），选择已完成开发实验及因子后提交诊断。支持覆盖率、秩相关、分组净收益、分年/测试块稳定性、因子相关性与JSON导出；仅用开发测试信号窗，常数/缺失/空组明确标记。跨会话记录展示失败、重放、重复公式及未完成尝试。研究室手动协作包和双模型API每轮反馈附受限诊断摘要，仍不自动启用版本。刷新保留额外因子勾选，切换统计范围仅显示当前结果。操作及统计口径见[因子诊断](docs/FACTOR_DIAGNOSTICS.md)。
 
+## 多因子增量与引用（011）
+
+导航进入“多因子增量与引用”（`/increments`），保存成分版本和正权重，在工作台将此组合选为唯一因子运行基线，再比较新增候选的同窗增量与逐项移除贡献。原工作台多选仍是逐窗择优。AI研究室可选“增量”模式，每轮以冻结占比将一个公式候选加入固定原组合，支持手动和OpenAI/DeepSeek反馈；不逐轮累加或自动启用。说明见[多因子增量](docs/FACTOR_INCREMENTS.md)。
+
 ## AI研究室（手动提案与OpenAI/DeepSeek API）
 
 从工作台导航进入“AI 研究室与任务”：选择已完成基线 → 设置目标与预算 → 导出协作包给 ChatGPT → 粘贴 JSON 提案 → 自动校验、创建因子版本、运行实验和对比 → 把反馈交给 ChatGPT 继续。手动模式无需模型密钥。迭代007已支持OpenAI（ChatGPT API）与DeepSeek API：在启动环境设置OPENAI_API_KEY / DEEPSEEK_API_KEY，研究室配置模型与声明单价，创建会话时选择提供方和预算，即可自动提案/实验/反馈。实际付费调用尚未验收，详见[模型API配置与恢复](docs/MODEL_API.md)。
@@ -63,7 +67,7 @@ python -m unittest discover -s tests -v
 
 从导航进入“验证与版本管理”：冻结固定因子、数据、费用和目标 → 最终验收 → 人工启用/替换/退役/回滚 → 追加月度快照后生成信号 → 等待持有期结束再更新成熟标签、查看退化提示。同一留出区间看过结果后重测会标为非独立，不能靠换候选、来源或快照重新取得准入资格。
 
-3/6/12 月持有期的最终验收至少需两个非重叠窗口，对应至少 8/14/26 月留出（工作台下限仍为12月）。初始样本门槛只用于软件流程，不代表效果已获证明。当前为固定池单笔研究，月度信号和标签由按钮触发，组合开发账本已在独立页面提供，组合级最终验收及自动串联仍待建设。规则、接口和恢复说明见 [最终验证与研究版本](docs/VALIDATION_LIFECYCLE.md)。
+3/6/12 月持有期的最终验收至少需两个非重叠窗口，对应至少 8/14/26 月留出（工作台下限仍为12月）。初始样本门槛只用于软件流程，不代表效果已获证明。当前为固定池单笔研究，月度信号和标签由按钮触发，组合开发账本已在独立页面提供，组合级最终验收与人工更替待做，自动流水线和组合前向账本待做，真实数据/真实前向样本仍待验收。规则、接口和恢复说明见 [最终验证与研究版本](docs/VALIDATION_LIFECYCLE.md)。
 
 ## 使用
 
@@ -149,10 +153,17 @@ quantify/objectives.py   结构化目标与共同验收政策
 quantify/diagnostics.py  覆盖、秩相关、分组与时期/成对诊断
 quantify/diagnostics_service.py 开发边界、不可变诊断与队列
 quantify/trial_audit.py  跨会话尝试与重复统计
+quantify/increments.py  固定开发窗配对添加/移除增量
+quantify/increment_service.py  多因子引用、不可变报告与队列
 quantify/lifecycle.py    冻结验证、暴露台账、研究版本与前向标签
 quantify/service.py      报告编排与完整CSV导出
 quantify/portfolio.py    Decimal组合账本、信号股数、日线开盘执行与净值
 quantify/portfolio_service.py 组合版本、开发边界、双账本任务服务
+quantify/portfolio_lifecycle.py 冻结组合、留出回放、人工版本事件
+quantify/portfolio_policy.py 独立组合准入与共同净值周期
+quantify/exposures.py    单笔/组合共享暴露预留及开发暴露检查
+quantify/pipeline.py     追加数据、时间截取、月度/信号/标签串联与显式调度
+quantify/forward_portfolio.py 仅按已记录决策重建的前向订单、账本与观察
 quantify/interfaces.py   数据适配/未来完整回测/概率校准协议
 quantify/datasets.py     CSV 契约、增量快照、时点查询、日线转月度
 quantify/storage.py      本地 SQLite 不可变记录

@@ -8,6 +8,7 @@ from .model_calls import APIProposalProvider
 from .model_api import ModelError
 from .portfolio_service import PortfolioService
 from .diagnostics_service import DiagnosticService
+from .increment_service import IncrementService
 
 from .jobs import JobStore, LostLease
 from .proposals import ManualProposalProvider
@@ -32,7 +33,8 @@ def run_research(store, job, owner):
         if current['stop_requested']:
             raise StopRequested()
 
-    tools = ResearchTools(store.directory, config['baseline_id'], progress, record, job_id)
+    tools = ResearchTools(store.directory, config['baseline_id'], progress, record, job_id,
+                          research_mode=config.get('research_mode', 'replace'), candidate_weight=config.get('candidate_weight', .25))
     context = tools.call('get_research_context')
     is_api = config.get('provider', 'manual') != 'manual'
     provider = (APIProposalProvider(store, job_id, owner, config['api'], config['goal']) if is_api else
@@ -97,6 +99,11 @@ def run_research(store, job, owner):
                 outcome.update(status='failed', error=result.get('error', '实验失败'))
                 progress['no_improvement'] += 1
             else:
+                if config.get('research_mode') == 'augment':
+                    outcome['increment'] = tools.call('get_factor_increment', experiment_id=result['id'])
+                    summary = outcome['increment'].get('summary', {})
+                    if not summary.get('comparison_eligible') or summary.get('metrics', {}).get('augmented') != result['selected']:
+                        raise ValueError('增量配对覆盖不足或与固定候选实验不一致，不能更新最佳版本')
                 comparison = tools.call('compare_runs', left_id=progress['best_id'], right_id=result['id'])
                 delta = comparison['difference_right_minus_left']
                 incumbent = tools.call('get_experiment_result', experiment_id=progress['best_id'])['selected']
@@ -138,6 +145,16 @@ def execute(directory, job_id, owner):
     try:
         if job['kind'] == 'research':
             run_research(store, job, owner)
+        elif job['kind'] == 'increment':
+            if job['payload']['engine'] != engine_fingerprint():
+                raise ValueError('增量评估排队后引擎改变，请重新提交')
+            def checkpoint(progress):
+                if store.job(job_id)['stop_requested']:
+                    raise StopRequested()
+                store.checkpoint(job_id, owner, progress)
+            result = IncrementService(Workbench(directory)).run(**job['payload']['request'], checkpoint=checkpoint)
+            store.finish(job_id, owner, 'succeeded' if result['status']=='completed' else 'failed',
+                         result={'increment_id': result['id']}, error=result.get('error'))
         elif job['kind'] == 'diagnostic':
             if job['payload']['engine'] != engine_fingerprint():
                 raise ValueError('诊断排队后引擎改变，请重新提交')

@@ -21,7 +21,7 @@ async function trials(){
  let result;try{result=await api('/api/diagnostics/trials'+(scope==='experiment'?'/'+exp:''));}catch(error){if(!current())return;throw error;}
  if(!current())return;audit=result;$('export-trials').disabled=false;const c=audit.counts;
  $('trial-note').textContent=`截至 ${audit.as_of}。${audit.note}`;
- $('trial-counts').innerHTML=table(['收益实验 / 额外重复','会话','已消费候选','有效公式种类','重复候选','非法公式','停止提案','已提交未消费提案'],[[c.experiments+' / '+c.repeated_experiments,c.sessions,c.proposals_consumed,c.unique_valid_formulas,c.repeated_proposals,c.invalid_formulas,c.stop_proposals,c.submitted_unconsumed]]);
+ $('trial-counts').innerHTML=table(['收益实验 / 额外重复','增量报告 / 队列任务','会话','已消费候选','有效公式种类','重复候选','非法公式','停止提案','已提交未消费提案'],[[c.experiments+' / '+c.repeated_experiments,(c.increment_reports??0)+' / '+(c.increment_jobs??0),c.sessions,c.proposals_consumed,c.unique_valid_formulas,c.repeated_proposals,c.invalid_formulas,c.stop_proposals,c.submitted_unconsumed]]);
  $('trial-statuses').innerHTML=table(['类型','状态','条数'],[...Object.entries(c.experiment_statuses).map(([k,v])=>['收益实验',k,v]),...Object.entries(c.proposal_statuses).map(([k,v])=>['候选尝试',k,v])]);
  $('trial-repeats').innerHTML=table(['结构签名','尝试次数','会话数','会话 / 轮次 / 状态'],audit.repeated_formula_groups.map(r=>[short(r.signature),r.attempts,r.sessions,r.records.map(v=>short(v.session_id)+' / '+v.round+' / '+v.status).join('；')]));
  $('trial-experiments').innerHTML=table(['同协议与定义签名','实验编号（含失败/重放）'],audit.repeated_experiment_groups.map(g=>[short(g.signature),g.experiment_ids.map(short).join('；')]));$('trial-json').textContent=JSON.stringify(audit,null,2);

@@ -8,6 +8,25 @@ from .trial_audit import audit_trials
 from .workbench import engine_fingerprint
 
 
+def development_data(store, experiment):
+    """One source of truth for matured, non-overlapping development test windows."""
+    snapshot = store.get('snapshot', experiment['request']['snapshot_id'])
+    rows = [r for r in snapshot['rows'] if r['date'] < experiment['protocol']['holdout_start']]
+    basis = 'price' if snapshot['kind'] == 'monthly_price' else 'total_return'
+    dates, panel = parse_panel(datasets.csv_text(snapshot['kind'], rows), required_fields=(), return_basis=basis)
+    horizon = experiment['request']['horizon']
+    windows = []
+    for fold_number, fold in enumerate(experiment['report']['folds'], 1):
+        start = next(i for i, d in enumerate(dates) if d.isoformat() == fold['test_signal_start'])
+        for i in range(start, min(start + 12, len(panel) - horizon - 1), horizon):
+            if dates[i + 1 + horizon].isoformat() > fold['test_last_exit']:
+                raise ValueError('诊断窗口与源实验不一致')
+            windows.append((i, fold_number))
+    if not windows:
+        raise ValueError('没有可用的开发期成熟测试信号窗')
+    return snapshot, basis, dates, panel, windows
+
+
 class DiagnosticService:
     def __init__(self,workbench,jobs=None):
         self.workbench,self.store,self.jobs=workbench,workbench.store,jobs
@@ -48,18 +67,8 @@ class DiagnosticService:
             if str(exc)!='记录不存在':raise
         experiment=self.store.get('experiment',experiment_id)
         try:
-            snapshot=self.store.get('snapshot',experiment['request']['snapshot_id'])
-            # Do not trust report CSV as an alternative path into held-out labels.
-            rows=[r for r in snapshot['rows'] if r['date']<experiment['protocol']['holdout_start']]
-            basis='price' if snapshot['kind']=='monthly_price' else 'total_return'
-            dates,panel=parse_panel(datasets.csv_text(snapshot['kind'],rows),required_fields=(),return_basis=basis)
-            horizon=experiment['request']['horizon'];windows=[]
-            for fold_number,fold in enumerate(experiment['report']['folds'],1):
-                start=next(i for i,d in enumerate(dates) if d.isoformat()==fold['test_signal_start'])
-                for i in range(start,min(start+12,len(panel)-horizon-1),horizon):
-                    if dates[i+1+horizon].isoformat()>fold['test_last_exit']:raise ValueError('诊断窗口与源实验不一致')
-                    windows.append((i,fold_number))
-            if not windows:raise ValueError('没有可用的开发期成熟测试信号窗')
+            snapshot,basis,dates,panel,windows=development_data(self.store,experiment)
+            horizon=experiment['request']['horizon']
             specs=[self.store.get('factor',i) for i in request['factor_ids']]
             report=analyze(dates=dates,panel=panel,specs=specs,windows=windows,horizon=horizon,
                            cost_bps=experiment['request']['cost_bps'],group_count=request['group_count'],checkpoint=checkpoint)

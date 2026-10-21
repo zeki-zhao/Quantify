@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quantify · 验证与版本管理</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/workspace.css"><script src="/strategies.js" defer></script></head>
 <body><header><span class="logo">Q</span><div><h1>验证与版本管理</h1><p>冻结方案 · 最终验收 · 人工更替 · 前向观察</p></div><a href="/workspace">返回研究工作台 ↗</a></header>
-<main><nav><a href="/diagnostics">因子诊断与试验记录</a><a href="/portfolio">组合回放</a><a href="/lab">AI 研究室与任务</a><a href="/market">在线行情与下载</a></nav>
+<main><nav><a href="/increments">多因子增量与引用</a><a href="/diagnostics">因子诊断与试验记录</a><a href="/portfolio">组合回放</a><a href="/lab">AI 研究室与任务</a><a href="/market">在线行情与下载</a></nav>
 <p class="notice">此处管理研究版本，不产生订单。最终验收固定一个因子，不在留出期重新训练或择优。同一股票与日期区间看过结果后，再次验收仅算探索性重测；合成数据仅验证流程。组合页提供独立的开发窗资金与成交账本，组合最终验收与启用尚未接入。价格收益口径不含现金分红，公司行动跳变未调整。</p>
 <p id="status" role="status" aria-live="polite"></p>
 <section><h2>1. 冻结候选</h2><form id="freeze-form"><div class="grid"><label>开发实验<select id="experiment" required></select></label><label>固定因子版本<select id="factor" required></select></label><label>最终比较参照<select id="reference"><option value="">同期全池</option></select></label><label>版本名称<input id="name" maxlength="100" value="候选研究版本" required></label></div><p id="objective-info" class="muted"></p><p>数据快照、因子、参照、费用、持有期、目标与约束一并封存；至少两个非重叠成熟信号窗口。3/6/12 月持有期需至少 8/14/26 月留出数据。比较参照选择实验时，固定其最后开发窗的因子。</p><button type="submit">冻结方案</button></form></section>

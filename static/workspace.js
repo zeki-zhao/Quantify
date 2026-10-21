@@ -80,7 +80,7 @@ async function refresh() {
   options('universe-snapshot',snapshots.filter(s=>s.kind==='universe'),snapshotLabel,'使用日线全部代码（固定池）');
   options('run-snapshot',snapshots.filter(s=>['monthly','monthly_price'].includes(s.kind)),snapshotLabel);
   options('factor-parent',factors,factorLabel);
-  $('factor-list').innerHTML=factors.map(f=>`<div class="factor-card"><h3>${esc(f.name)}</h3><code>${short(f.id)}</code><p>${f.kind==='expression'?esc(f.expression):`窗口 ${f.lookback} 月 · 跳过 ${f.skip} 月`}</p><p>${esc(f.reason)}</p><p class="muted">${f.parent_id?'父版本 '+short(f.parent_id):'内置基线'}</p></div>`).join('');
+  $('factor-list').innerHTML=factors.map(f=>`<div class="factor-card"><h3>${esc(f.name)}</h3><code>${short(f.id)}</code><p>${f.kind==='blend'?'固定成分：'+f.components.map(c=>esc(c.factor.name)+' ('+short(c.factor.id)+', 权重 '+c.weight+')').join('；'):f.kind==='expression'?esc(f.expression):`窗口 ${f.lookback} 月 · 跳过 ${f.skip} 月`}</p><p>${esc(f.reason)}</p><p class="muted">${f.parent_id?'父版本 '+short(f.parent_id):'内置基线'}</p></div>`).join('');
   const checked=new Set([...document.querySelectorAll('#factor-options input:checked')].map(i=>i.value));
   $('factor-options').innerHTML=factors.map(f=>`<label><input type="checkbox" value="${f.id}" ${checked.has(f.id)?'checked':''}>${esc(factorLabel(f))}</label>`).join('');
   $('runs').innerHTML=table(['实验','状态','数据快照','因子数量','时间'],runs.map(r=>[short(r.id),r.status==='completed'?'已完成':'失败',short(String(r.request.snapshot_id)),r.request.factor_ids?.length??0,r.created_at]));
