@@ -7,6 +7,7 @@ from .portfolio_service import PortfolioService
 from .portfolio_lifecycle import PortfolioLifecycle
 from .diagnostics_service import DiagnosticService
 from .increment_service import IncrementService
+from .pipeline import PipelineService, PipelineScheduler
 from .lifecycle import Lifecycle
 from .expressions import GRAMMAR, validate_expression
 from .jobs import QueueManager
@@ -33,8 +34,11 @@ class Lab:
         self.diagnostics = DiagnosticService(self.workbench, self.store)
         self.increments = IncrementService(self.workbench, self.store)
         self.market = MarketService(directory, self.store)
+        self.pipelines = PipelineService(self.workbench, self.store)
+        self.pipeline_scheduler = PipelineScheduler(self.pipelines)
 
     def close(self):
+        self.pipeline_scheduler.close()
         self.market.close()
         self.queue.close()
 
@@ -148,7 +152,7 @@ class Lab:
                     'formula_language': GRAMMAR, 'proposal_schema': PROPOSAL_SCHEMA}
         if path == '/api/lab/jobs':
             return [{key: value for key, value in job.items() if key not in ('payload', 'progress', 'owner')}
-                    | {'goal': job['payload'].get('goal', '组合最终验收' if job['kind'] == 'portfolio_validation' else '因子增量评估' if job['kind'] == 'increment' else '历史日线下载' if job['kind'] == 'history' else '组合回放' if job['kind'] == 'portfolio' else '因子诊断' if job['kind'] == 'diagnostic' else '单次因子实验')}
+                    | {'goal': job['payload'].get('goal', '数据与前向流水线' if job['kind']=='pipeline' else '组合最终验收' if job['kind'] == 'portfolio_validation' else '因子增量评估' if job['kind'] == 'increment' else '历史日线下载' if job['kind'] == 'history' else '组合回放' if job['kind'] == 'portfolio' else '因子诊断' if job['kind'] == 'diagnostic' else '单次因子实验')}
                     for job in self.store.jobs()]
         prefix = '/api/lab/jobs/'
         if path.startswith(prefix):

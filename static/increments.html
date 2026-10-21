@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quantify · 多因子增量</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/workspace.css"><script src="/task-watcher.js" defer></script><script src="/increments.js" defer></script></head>
 <body><header><span class="logo">Q</span><div><h1>多因子增量</h1><p>固定版本 · 配对比较 · 逐项移除贡献</p></div><a href="/workspace">返回工作台 ↗</a></header><main>
-<nav><a href="/portfolio-validation">组合验证与版本</a><a href="/diagnostics">因子诊断与试验记录</a><a href="/lab">AI 研究室与任务</a><a href="/portfolio">组合回放</a><a href="/strategies">验证与版本管理</a></nav>
+<nav><a href="/forward">数据与前向观察</a><a href="/portfolio-validation">组合验证与版本</a><a href="/diagnostics">因子诊断与试验记录</a><a href="/lab">AI 研究室与任务</a><a href="/portfolio">组合回放</a><a href="/strategies">验证与版本管理</a></nav>
 <p class="notice">多因子按截面平均秩百分位与固定正权重共同打分；工作台的多选列表则是逐窗择优，两者含义不同。仅评估开发窗单笔收益，最终留出不参与。所有尝试保留，不能替代独立最终验收。</p><p id="status" role="status" aria-live="polite"></p>
 <section><h2>1. 保存多因子版本</h2><p>选择2至10个非组合版本并填写正权重，系统归一化权重。窗口由成分版本决定；禁止嵌套，修改时保存新版本。保存后可在工作台只勾选这个组合版本，运行固定组合基线实验，也可用于组合回放。</p>
 <form id="blend-form"><div class="grid"><label>名称<input id="blend-name" required maxlength="100"></label><label>修改理由<input id="blend-reason" required maxlength="500"></label><label>父版本（可选）<select id="blend-parent"></select></label></div><div id="components" class="table-wrap"></div><button type="submit">保存不可变组合版本</button></form><p id="saved-blend" class="notice"></p></section>

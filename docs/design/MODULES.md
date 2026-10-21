@@ -20,6 +20,7 @@ Container_Boundary(app, "应用主进程 / app.py") {
   Component(handler, "Handler", "app.py", "静态资源、JSON 边界、路由、同步请求计算锁")
   Component(lab, "Lab", "lab.py", "会话、模型配置、协作包、任务提交与服务组装")
   Component(wb, "Workbench", "workbench.py", "数据/因子操作、实验、比较与复现")
+  Component(pipeline, "PipelineService / PipelineScheduler", "pipeline.py / 默认关闭的调度线程", "来源追加、质量与时间视图、实际信号/标签与任务")
   Component(plifecycle, "PortfolioLifecycle", "portfolio_lifecycle.py", "冻结/专门政策、最终队列、人工更替")
   Component(increments, "IncrementService", "increment_service.py", "固定多因子、同窗添加/移除与引用、AI摘要")
   Component(diagnostics, "DiagnosticService", "diagnostics_service.py", "开发窗诊断/缓存、队列、跨会话试验统计")
@@ -32,6 +33,11 @@ Container_Boundary(app, "应用主进程 / app.py") {
 Rel(web, handler, "请求", "HTTP")
 Rel(handler, wb, "/api/workspace/*")
 Rel(handler, lab, "/api/lab/*")
+Rel(handler, pipeline, "/api/pipelines/*")
+Rel(lab, pipeline, "持有服务和显式调度线程")
+Rel(pipeline, db, "pipeline状态、实际信号/成熟标签、前向报告")
+Rel(pipeline, queue, "通过JobStore原子去重提交pipeline任务")
+Rel(pipeline, lifecycle, "单笔信号和成熟标签，绑定启用事件")
 Rel(handler, plifecycle, "/api/portfolio-validation/*")
 Rel(lab, plifecycle, "持有服务实例")
 Rel(plifecycle, db, "portfolio_freeze / portfolio_evaluation / 事件 / 共享暴露")
@@ -77,6 +83,7 @@ SHOW_LEGEND()
 | 在线适配 | `market_providers.py` | 固定 HTTPS 响应 → 规范化报价/日线 | 新浪 GBK 严格解析、东财 JSON/单位转换；响应脚本不执行；有限重试 |
 | 行情编排 | `market.py` | 配置/日期/股票 → 报价缓存或 history 任务 | 旧好报价保留；时间倒退与过期提示；每日意图先持久化再提交 |
 | 因子与公式 | `factors.py`、`expressions.py` | 因子定义 + 历史面板 → 截面分值 | 版本不可变；窗口只看过去；AST 白名单及复杂度/数值边界 |
+| 前向流水线 | `pipeline.py`、`forward_portfolio.py` | 追加来源+启用事件 → 时间视图/月度/信号/标签/账本 | 不回填信号；冻结股数；旧账目前缀不可改；显式调度与恢复 |
 | 组合最终验证 | `portfolio_lifecycle.py`、`portfolio_policy.py`、`exposures.py` | 完整冻结+留出 → 现金起步账本/政策与人工事件 | 与单笔共用预留；检查开发暴露；最终结果不进入AI |
 | 多因子增量 | `factors.py`、`increments.py`、`increment_service.py` | 固定版本/权重与开发窗 → 配对/移除报告、引用 | 不嵌套；Fraction权重；整窗配对拒算；不是净值归因 |
 | 研究计算 | `research.py` | 开发面板、因子、费用、目标 → 分窗单笔统计 | 标签成熟、延迟入场、共同窗口；固定池，不核算组合资金 |
@@ -326,7 +333,7 @@ end note
 
 恢复不会把 interrupted 直接改回 queued。失败、取消、超时或中断后，显式重试创建新记录，以 `retry_of` 关联旧任务并重置预算。暂停继续会复用已经提交的确定轮次实验；pending 检查点保留因子、阶段及实验编号。
 
-原单笔最终验收及手动前向接口仍为同步服务；012组合最终验收使用队列。代码升级需通过引擎检查，不得混用旧冻结方案。
+原单笔最终验收及手动前向接口仍为同步服务；013流水线将单笔前向更新放入队列，012组合最终验收亦使用队列。同步接口不享有队列暂停/取消/运行时限机制；代码升级后必须通过引擎检查，不得混用旧冻结方案继续计算。
 
 ## 6. 主要保护与扩展接口
 
@@ -510,4 +517,41 @@ end note
 
 冻结以内容摘要验证，嵌入组合/参照/政策及端点；结果按冻结编号不可覆盖。队列取消或中断不撤销已预留暴露；没有完整结果不能重算，有结果只读取缓存。报告已提交但任务被取消时，也需一次显式重试成功交付缓存后才能启用。
 
-原单笔与组合事件表独立，暴露表共享；相交股票/时间无论哪条验证路径都失去后续独立资格。同事务还检查已成功开发实验是否覆盖目标区间。人工组合版本为研究引用，不继承账本持仓；组合前向账本待建设，见[组合规则](../PORTFOLIO_VALIDATION.md)。
+原单笔与组合事件表独立，暴露表共享；相交股票/时间无论哪条验证路径都失去后续独立资格。同事务还检查已成功开发实验是否覆盖目标区间。人工组合版本为研究引用，不继承账本持仓；013前向流水线另建现金观察账户，见第13节及[组合规则](../PORTFOLIO_VALIDATION.md)。
+
+
+## 13. 实际信号与自动前向流水线（013）
+
+```plantuml
+@startuml forward_pipeline_components
+skinparam defaultFontName Noto Sans CJK SC
+title 绑定启用事件的数据与前向流水线
+component "前向页面 / forward.js\nTaskWatcher / 不可变报告ID" as web
+component "PipelineService\n启用事件/引擎绑定、来源与质量" as service
+component "PipelineScheduler\n默认关闭 / 收盘后检测\n日期+来源事务意图" as scheduler
+component "QueueManager / JobStore\n同流水线活动任务原子去重" as queue
+component "时间视图 / 月度派生\n完整日期 / 可用时间 / 固定池" as data
+component "Lifecycle.signal / observe\nexpected_seq / 单笔成熟标签" as single
+component "forward_portfolio\n已记录决策 / 冻结股数\n生成日期之后成交 / 前缀核对" as ledger
+database "SQLite\npipeline_spec / pipeline_run / pipeline_state\n实际信号 / 成熟标签 / 前向报告 / heads" as db
+web --> service : 建立 / 运行 / 开关 / 历史证据
+scheduler --> service : 绑定检查及来源唯一后代链
+scheduler --> queue : 先保存意图再提交；失败暂停
+service --> queue : 手动或显式自动任务
+service --> data : 当前已完成且可用数据；拒绝修订/回填
+service --> single : 原单笔信号/标签
+service --> ledger : 启用事件、实际生成时间及固定参数
+single --> db : 不可变信号 / 成熟标签
+ledger --> db : 固定订单、曲线/成交前缀及成熟段
+service --> db : 分阶段提交 / 状态分类 / 不可变报告
+note bottom of ledger
+  无历史回填交易，不继承最终回测持仓
+  仅成熟样本充足才相对同期参照提示下降
+  不交易、不自动调用模型或更替
+end note
+@enduml
+```
+
+来源按父版本链取唯一末端，时间视图排除未来/未完成行；根、冻结历史及最近成功输入必须保留，历史回填会改变成交顺序故拒绝。组合订单在实际生成时按当时可用收盘及观察账户权益冻结，只在生成日期之后执行；后续重建只使用已记录订单。
+
+相邻实际候选决策的估值端点形成不可变成熟标签，旧curve/trades/orders前缀必须一致。每个流水线绑定独立启用事件，更替/回滚后旧链停止，新绑定现金起步。后台调度意图和队列都做去重，孤立意图/取消/中断需显式恢复；质量异常、执行失败、待数据、样本不足和下降分列。详细规则见[前向流水线](../FORWARD_PIPELINE.md)。

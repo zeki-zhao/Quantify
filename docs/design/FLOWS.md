@@ -731,3 +731,54 @@ note over Worker, DB
 end note
 @enduml
 ```
+
+
+## 16. 数据追加、实际决策、成熟标签与恢复（013）
+
+```plantuml
+@startuml forward_pipeline_flow
+skinparam defaultFontName Noto Sans CJK SC
+title 显式自动流水线与实际信号前向观察
+actor 研究者 as User
+participant "页面 / PipelineService" as Service
+participant "显式调度 / 队列" as Queue
+participant "时间视图 / 月度派生" as Data
+participant "单笔 / 组合前向" as Forward
+database SQLite as DB
+User -> Service : 绑定当前启用事件与来源根；默认关闭自动
+opt 显式开启自动运行
+  User -> Service : enabled + expected_revision
+  Queue -> DB : 日期+来源事务竞争调度意图
+  Queue -> DB : 原子去重同流水线活动任务
+end
+User -> Service : 手动运行 / 修复后的显式恢复
+Service -> Queue : pipeline任务；分阶段检查点
+Queue -> Service : run(绑定定义)
+Service -> DB : 核对引擎、启用ID及事件序号
+Service -> Data : 来源唯一后代、完整日期/可用时间截取
+Data -> Data : 根/历史/最近成功输入不可修订或回填
+alt 数据质量/绑定异常
+  Data --> Service : 质量或版本错误；不判为退化
+  Service -> DB : 失败记录 / 暂停自动调度；保留原证据
+else 近期数据完整
+  Data --> Service : 新月度及固定池数据
+  Service -> Forward : 当前实际时间、冻结规则与之前记录
+  alt 单笔
+    Forward -> DB : 原信号幂等生成 / 已成熟标签
+  else 组合
+    Forward -> DB : 固定实际生成时间、估值日、股票及股数
+    Forward -> Forward : 仅生成日期之后首个观察日模拟执行
+    Forward -> Forward : 追加估值；核对旧曲线/成交/订单前缀
+    Forward -> DB : 相邻实际决策端点的不可变成熟标签
+  end
+  Forward --> Service : 待数据/不足样本/观察/下降提示
+  Service -> DB : 不可变报告及运行，更新当前引用
+end
+Service --> User : 当前状态及精确绑定的历史证据
+note over Queue, DB
+  中断可能已有合法阶段产物，重试复用旧信号时间与股数
+  孤立调度意图及失败不静默重发；手动成功验证后恢复
+  更替或回滚改变启用事件，旧链停止，新链现金起步
+end note
+@enduml
+```

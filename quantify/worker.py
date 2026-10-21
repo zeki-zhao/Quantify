@@ -10,6 +10,7 @@ from .portfolio_service import PortfolioService
 from .portfolio_lifecycle import PortfolioLifecycle
 from .diagnostics_service import DiagnosticService
 from .increment_service import IncrementService
+from .pipeline import PipelineService
 
 from .jobs import JobStore, LostLease
 from .proposals import ManualProposalProvider
@@ -146,6 +147,15 @@ def execute(directory, job_id, owner):
     try:
         if job['kind'] == 'research':
             run_research(store, job, owner)
+        elif job['kind'] == 'pipeline':
+            if job['payload']['engine'] != engine_fingerprint():
+                raise ValueError('流水线排队后引擎改变，请恢复绑定环境')
+            def checkpoint(progress):
+                if store.job(job_id)['stop_requested']:
+                    raise StopRequested()
+                store.checkpoint(job_id, owner, progress)
+            result = PipelineService(Workbench(directory),store).run(pipeline_id=job['payload']['pipeline_id'],run_id=job_id+'-pipeline',checkpoint=checkpoint)
+            store.finish(job_id,owner,'succeeded' if result['status']=='completed' else 'failed',result={'pipeline_run_id':result['id']},error=result.get('error'))
         elif job['kind'] == 'portfolio_validation':
             if job['payload']['engine'] != engine_fingerprint():
                 raise ValueError('组合验收排队后引擎改变，请恢复冻结环境')

@@ -11,3 +11,5 @@ textarea{font:inherit;padding:10px;border:1px solid #c8d4cd;border-radius:5px;ma
 #saved-blend{overflow-wrap:anywhere}#components>label{display:grid;grid-template-columns:24px minmax(0,1fr) 110px;align-items:center;gap:8px;margin:10px 0;overflow-wrap:anywhere}#components input[type=number]{min-width:0}@media(max-width:600px){#components>label{grid-template-columns:24px minmax(0,1fr)}#components input[type=number]{grid-column:2}}
 
 #freeze-note{overflow-wrap:anywhere}
+
+#created{overflow-wrap:anywhere}

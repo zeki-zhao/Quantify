@@ -34,4 +34,6 @@
 
 - 012新增 `/portfolio-validation`、`docs/PORTFOLIO_VALIDATION.md`：组合冻结/独立留出现金回放/专门准入与人工启用更替；第七种portfolio_validation任务，共用单笔暴露台账并检查已知开发暴露。最终结果不进入AI，启用仅改变研究引用；不继承持仓，组合前向账本和A6自动串联继续待做。
 
+- 013新增 `/forward`、`docs/FORWARD_PIPELINE.md`：显式开启的来源追加→月度→实际信号/成熟标签与组合前向账本，第八种pipeline任务。生成日期后才模拟成交，订单数量和历史账目前缀不可改；修订/回填/分支/更替/中断暂停，样本不足不告警，不交易、不自动调用AI或更替。
+
 - 011本地接续（2026-10-17）：本地与GitHub的`work`同为`aa7dc3b`，云端已提交代码无需再拉取；Windows 126项测试及CLI启动/HTTP检查通过，浏览器未复跑。云端聊天、未提交内容和运行数据库尚未同步。下一功能优先A3多因子引用/增量评估，下个迭代012；详细证据见`docs/iterations/011-local-sync/README.md`。

@@ -48,6 +48,9 @@ class Lifecycle:
             db.execute('''CREATE TABLE IF NOT EXISTS forward_keys (
                 strategy_id TEXT, signal_date TEXT, signal_id TEXT UNIQUE,
                 PRIMARY KEY(strategy_id, signal_date))''')
+            db.execute('''CREATE TABLE IF NOT EXISTS forward_event_keys (
+                strategy_id TEXT, event_seq INTEGER, signal_date TEXT, signal_id TEXT UNIQUE,
+                PRIMARY KEY(strategy_id,event_seq,signal_date))''')
 
     def freeze(self, *, experiment_id, baseline_id=None, factor_id=None, name='冻结研究版本'):
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
@@ -167,10 +170,12 @@ class Lifecycle:
         if any(new.get(key) != value for key, value in old.items()):
             raise ValueError('历史数据缺失或被修订，不能静默接入前向观察；请先核对并建立新版本')
 
-    def signal(self, *, snapshot_id):
+    def signal(self, *, snapshot_id, expected_seq=None):
         state = self.state()
         if not state['active_id']:
             raise ValueError('请先人工启用研究版本')
+        if expected_seq is not None and state['events'][-1]['seq'] != expected_seq:
+            raise ValueError('活跃版本已改变')
         strategy_id = state['active_id']
         frozen = self.store.get('freeze', strategy_id)
         if frozen['engine'] != engine_fingerprint():
@@ -192,23 +197,36 @@ class Lifecycle:
         # Serialize against replacement: no signal can be committed for a just-retired version.
         with closing(self.store.connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
-            active = db.execute('SELECT strategy_id FROM lifecycle_events ORDER BY seq DESC LIMIT 1').fetchone()[0]
-            if active != strategy_id:
+            active = db.execute('SELECT strategy_id,seq FROM lifecycle_events ORDER BY seq DESC LIMIT 1').fetchone()
+            if active[0] != strategy_id or (expected_seq is not None and active[1] != expected_seq):
                 raise ValueError('活跃版本已改变')
-            row = db.execute('SELECT signal_id FROM forward_keys WHERE strategy_id=? AND signal_date=?', (strategy_id, stamp.isoformat())).fetchone()
+            if expected_seq is None:
+                row=db.execute('SELECT signal_id FROM forward_keys WHERE strategy_id=? AND signal_date=?',(strategy_id,stamp.isoformat())).fetchone()
+            else:
+                row=db.execute('SELECT signal_id FROM forward_event_keys WHERE strategy_id=? AND event_seq=? AND signal_date=?',(strategy_id,expected_seq,stamp.isoformat())).fetchone()
+                if row is None:
+                    legacy=db.execute('SELECT signal_id FROM forward_keys WHERE strategy_id=? AND signal_date=?',(strategy_id,stamp.isoformat())).fetchone()
+                    if legacy:
+                        from json import loads
+                        saved=loads(db.execute("SELECT body FROM artifacts WHERE kind='forward_signal' AND id=?",legacy).fetchone()[0])
+                        if saved.get('activation_seq')==expected_seq:row=legacy
             if row:
                 signal_id = row[0]
             else:
                 signal_id = uuid.uuid4().hex
                 body = dict(strategy_id=strategy_id, snapshot_id=snapshot_id, signal_date=stamp.isoformat(),
+                            activation_seq=state['events'][-1]['seq'],
                             generated_at=clock.isoformat(), symbols=symbols, pool=sorted(panel[-1]),
                             factor_id=spec['id'], request=frozen['request'], is_demo=snapshot['is_demo'],
                             note='研究信号，无订单；下一月观察点入场，入场日期必须严格晚于实际生成日期。')
                 db.execute('INSERT INTO artifacts VALUES (?,?,?,?)', ('forward_signal', signal_id, clock.isoformat(), canonical(body)))
-                db.execute('INSERT INTO forward_keys VALUES (?,?,?)', (strategy_id, stamp.isoformat(), signal_id))
+                if expected_seq is None:
+                    db.execute('INSERT INTO forward_keys VALUES (?,?,?)',(strategy_id,stamp.isoformat(),signal_id))
+            if expected_seq is not None:
+                db.execute('INSERT OR IGNORE INTO forward_event_keys VALUES (?,?,?,?)',(strategy_id,expected_seq,stamp.isoformat(),signal_id))
         return self.store.get('forward_signal', signal_id)
 
-    def observe(self, *, strategy_id, snapshot_id):
+    def observe(self, *, strategy_id, snapshot_id, expected_seq=None):
         frozen = self.store.get('freeze', strategy_id)
         self.store.get('strategy', strategy_id)
         if frozen['engine'] != engine_fingerprint():
@@ -217,7 +235,8 @@ class Lifecycle:
         self._compatible(snapshot, self.store.get('snapshot', frozen['request']['snapshot_id']))
         dates, panel = panel_for(snapshot, [])
         horizon, cost = frozen['request']['horizon'], frozen['request']['cost_bps']
-        signals = [item for item in self.store.list('forward_signal') if item['strategy_id'] == strategy_id]
+        signals = [item for item in self.store.list('forward_signal') if item['strategy_id'] == strategy_id and
+                   (expected_seq is None or item.get('activation_seq')==expected_seq)]
         today = now().astimezone(timezone(timedelta(hours=8))).date()
         for signal in signals:
             self._compatible(snapshot, self.store.get('snapshot', signal['snapshot_id']))
@@ -238,19 +257,21 @@ class Lifecycle:
                         selected_returns=returns(panel, index+1, exit_index, signal['symbols'], cost),
                         pool_returns=returns(panel, index+1, exit_index, signal['pool'], cost))
             self.store.put('forward_label', body, signal['id'])
-        return self.forward_report(strategy_id)
+        return self.forward_report(strategy_id,expected_seq=expected_seq)
 
-    def forward_report(self, strategy_id):
+    def forward_report(self, strategy_id, expected_seq=None):
         self.store.get('strategy', strategy_id)
         frozen = self.store.get('freeze', strategy_id)
-        labels = [item for item in self.store.list('forward_label') if item['strategy_id'] == strategy_id]
+        signals = [s for s in self.store.list('forward_signal') if s['strategy_id'] == strategy_id and
+                   (expected_seq is None or s.get('activation_seq')==expected_seq)]
+        signal_ids={s['id'] for s in signals}
+        labels = [item for item in self.store.list('forward_label') if item['strategy_id'] == strategy_id and item['signal_id'] in signal_ids]
         # Keep overlapping observations for traceability, but report a non-overlapping subset.
         eligible, last_exit = [], ''
         for label in sorted(labels, key=lambda item: (item['entry'], item['id'])):
             if label['entry'] >= last_exit:
                 eligible.append(label); last_exit = label['exit']
-        signals = [s for s in self.store.list('forward_signal') if s['strategy_id'] == strategy_id]
-        result = dict(strategy_id=strategy_id, signals=signals, labels=labels,
+        result = dict(strategy_id=strategy_id, activation_seq=expected_seq, signals=signals, labels=labels,
                       evaluated_windows=len(eligible), pending_labels=len(signals)-len(labels),
                       is_demo=frozen['is_demo'], price_basis=frozen['price_basis'],
                       return_basis='price' if frozen['price_basis'] == 'unadjusted' else 'total_return',

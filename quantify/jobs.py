@@ -82,7 +82,7 @@ class JobStore(ResearchStore):
             raise LostLease('任务已经停止或执行所有者已改变')
 
     def create(self, kind, payload, timeout_seconds, progress=None, status='queued', retry_of=None):
-        if kind not in ('experiment', 'research', 'history', 'portfolio', 'diagnostic', 'increment', 'portfolio_validation') or status not in ('queued', 'waiting_input'):
+        if kind not in ('experiment', 'research', 'history', 'portfolio', 'diagnostic', 'increment', 'portfolio_validation', 'pipeline') or status not in ('queued', 'waiting_input'):
             raise ValueError('任务类型或初始状态无效')
         if type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 3600:
             raise ValueError('任务运行时限需大于零且最多 3600 秒')
@@ -90,6 +90,10 @@ class JobStore(ResearchStore):
         stamp = now()
         with closing(self.connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
+            if kind == 'pipeline':
+                active=db.execute("SELECT payload FROM jobs WHERE kind='pipeline' AND status IN ('queued','running')").fetchall()
+                if any(json.loads(r[0]).get('pipeline_id')==payload.get('pipeline_id') for r in active):
+                    raise ValueError('该流水线已有待执行任务')
             count = db.execute("SELECT count(*) FROM jobs WHERE status IN ('queued','running','waiting_input','paused')").fetchone()[0]
             if count >= 50:
                 raise ValueError('最多保留 50 个未结束任务，请取消不用的任务')

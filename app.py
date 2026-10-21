@@ -16,7 +16,7 @@ from quantify.datasets import SCHEMAS
 
 ROOT = Path(__file__).resolve().parent
 WORK = threading.BoundedSemaphore(1)
-STATIC = {"/portfolio-validation": ("portfolio_validation.html", "text/html"), "/portfolio-validation.js": ("portfolio_validation.js", "text/javascript"), "/increments": ("increments.html", "text/html"), "/increments.js": ("increments.js", "text/javascript"), "/task-watcher.js": ("task_watcher.js", "text/javascript"), "/diagnostics": ("diagnostics.html", "text/html"), "/diagnostics.js": ("diagnostics.js", "text/javascript"),
+STATIC = {"/forward": ("forward.html", "text/html"), "/forward.js": ("forward.js", "text/javascript"), "/portfolio-validation": ("portfolio_validation.html", "text/html"), "/portfolio-validation.js": ("portfolio_validation.js", "text/javascript"), "/increments": ("increments.html", "text/html"), "/increments.js": ("increments.js", "text/javascript"), "/task-watcher.js": ("task_watcher.js", "text/javascript"), "/diagnostics": ("diagnostics.html", "text/html"), "/diagnostics.js": ("diagnostics.js", "text/javascript"),
           "/portfolio": ("portfolio.html", "text/html"), "/portfolio.js": ("portfolio.js", "text/javascript"),
           "/strategies": ("strategies.html", "text/html"), "/strategies.js": ("strategies.js", "text/javascript"),
           "/market": ("market.html", "text/html"), "/market.js": ("market.js", "text/javascript"),
@@ -72,9 +72,9 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_data(200, ','.join(SCHEMAS[kind]) + '\n', 'text/csv')
             return
-        if self.path.startswith(('/api/workspace/', '/api/lab/', '/api/market/', '/api/strategies/', '/api/portfolio/', '/api/diagnostics/', '/api/increments/', '/api/portfolio-validation/')):
+        if self.path.startswith(('/api/workspace/', '/api/lab/', '/api/market/', '/api/strategies/', '/api/portfolio/', '/api/diagnostics/', '/api/increments/', '/api/portfolio-validation/', '/api/pipelines/')):
             try:
-                self.send_json(200, (self.lab().portfolio_lifecycle if self.path.startswith('/api/portfolio-validation/') else self.lab().increments if self.path.startswith('/api/increments/') else self.lab().diagnostics if self.path.startswith('/api/diagnostics/') else self.lab().portfolio if self.path.startswith('/api/portfolio/') else self.lab().lifecycle if self.path.startswith('/api/strategies/') else self.lab().market if self.path.startswith('/api/market/') else self.lab() if self.path.startswith('/api/lab/') else self.workbench()).get(self.path))
+                self.send_json(200, (self.lab().pipelines if self.path.startswith('/api/pipelines/') else self.lab().portfolio_lifecycle if self.path.startswith('/api/portfolio-validation/') else self.lab().increments if self.path.startswith('/api/increments/') else self.lab().diagnostics if self.path.startswith('/api/diagnostics/') else self.lab().portfolio if self.path.startswith('/api/portfolio/') else self.lab().lifecycle if self.path.startswith('/api/strategies/') else self.lab().market if self.path.startswith('/api/market/') else self.lab() if self.path.startswith('/api/lab/') else self.workbench()).get(self.path))
             except ValueError as exc:
                 self.send_json(400, {'error': str(exc)})
             except (OSError, sqlite3.Error):
@@ -91,6 +91,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "路径不存在"})
 
     def do_POST(self):
+        is_pipeline = self.path in ('/api/pipelines/specs', '/api/pipelines/config', '/api/pipelines/run')
         is_portfolio_validation = self.path in ('/api/portfolio-validation/freeze', '/api/portfolio-validation/evaluate', '/api/portfolio-validation/change')
         is_increment = self.path in ('/api/increments/blends', '/api/increments/reports')
         is_diagnostic = self.path == '/api/diagnostics/reports'
@@ -98,7 +99,7 @@ class Handler(BaseHTTPRequestHandler):
         is_portfolio = self.path in {'/api/portfolio/' + name for name in ('specs', 'runs', 'demo')}
         is_strategy = self.path in {'/api/strategies/' + name for name in ('freeze', 'evaluate', 'change', 'signal', 'observe')}
         is_market = self.path in {'/api/market/' + name for name in ('config', 'refresh', 'history')}
-        if not is_portfolio_validation and not is_increment and not is_diagnostic and not is_lab and not is_market and not is_strategy and not is_portfolio and self.path not in ("/api/analyze", "/api/research") and self.path not in {
+        if not is_pipeline and not is_portfolio_validation and not is_increment and not is_diagnostic and not is_lab and not is_market and not is_strategy and not is_portfolio and self.path not in ("/api/analyze", "/api/research") and self.path not in {
                 "/api/workspace/" + name for name in ("import", "demo", "monthly", "as-of", "factors", "experiments", "compare", "replay")}:
             self.send_json(404, {"error": "路径不存在"})
             return
@@ -114,7 +115,9 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8"), parse_constant=reject_constant)
             if not isinstance(payload, dict):
                 raise ValueError("请求必须为 JSON 对象")
-            if is_portfolio_validation:
+            if is_pipeline:
+                result = self.lab().pipelines.post(self.path, payload)
+            elif is_portfolio_validation:
                 result = self.lab().portfolio_lifecycle.post(self.path, payload)
             elif is_increment:
                 result = self.lab().increments.post(self.path, payload)
